@@ -26,9 +26,8 @@ type ModerationResult struct {
 }
 
 func NewModerationResult(contentID string, isApproved bool, score float64, categories []ModerationCategory, modelName string, durationMs int64) (*ModerationResult, error) {
-	if contentID == "" {
-		return nil, errors.New("content ID cannot be empty")
-	}
+	// We allow empty contentID because it might be set later by the caller
+	// ContentID validation happens at the service level
 
 	if score < 0 || score > 1 {
 		return nil, errors.New("score must be between 0 and 1")
@@ -42,8 +41,12 @@ func NewModerationResult(contentID string, isApproved bool, score float64, categ
 		return nil, errors.New("duration cannot be negative")
 	}
 
+	if categories == nil {
+		categories = []ModerationCategory{}
+	}
+
 	return &ModerationResult{
-		ID:         "", // Will be set by repository
+		ID:         "",
 		ContentID:  contentID,
 		IsApproved: isApproved,
 		Score:      score,

@@ -39,8 +39,12 @@ func (m *MockContentRepository) Save(ctx context.Context, content *entity.Conten
 		content.ID = fmt.Sprintf("mock-content-%d", len(m.contents)+1)
 	}
 
-	content.CreatedAt = time.Now()
-	content.UpdatedAt = time.Now()
+	if content.CreatedAt.IsZero() {
+		content.CreatedAt = time.Now()
+	}
+	if content.UpdatedAt.IsZero() {
+		content.UpdatedAt = time.Now()
+	}
 
 	contentCopy := *content
 	m.contents[content.ID] = &contentCopy
