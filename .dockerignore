@@ -1,0 +1,41 @@
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Binaries
+bin/
+*.exe
+
+# Tests and coverage
+coverage.out
+coverage.html
+*_test.go
+
+# Environment
+.env
+.env.local
+
+# Documentation
+*.md
+docs/
+
+# Docker
+docker-compose.yml
+docker-compose.override.yml
+Dockerfile
+
+# Dependencies
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
