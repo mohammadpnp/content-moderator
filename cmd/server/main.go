@@ -2,15 +2,20 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/joho/godotenv"
+
+	"github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http"
+	pgrepo "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	"github.com/mohammadpnp/content-moderator/internal/service"
 	"github.com/mohammadpnp/content-moderator/test/mock"
 )
@@ -20,97 +25,55 @@ func main() {
 		log.Println("No .env file found, using system environment variables")
 	}
 
-	log.Println("Starting Content Moderator Service (Phase 0 - Foundation)...")
-
-	// ============================================
-	// Dependency Injection (Manual Wiring)
-	// In Phase 0, we use Mock implementations
-	// In Phase 1+, we'll replace these with real adapters
-	// ============================================
-
-	// 1. Create outbound adapters (currently mocks)
-	log.Println("Initializing outbound adapters (mocks for Phase 0)...")
-	contentRepo := mock.NewMockContentRepository()
-	aiClient := mock.NewMockAIClient()
-	messageBroker := mock.NewMockMessageBroker()
-	cacheStore := mock.NewMockCacheStore()
-
-	// 2. Create services with constructor injection
-	log.Println("Initializing services...")
-	contentSvc := service.NewContentService(contentRepo, messageBroker)
-	moderationSvc := service.NewModerationService(contentRepo, aiClient, cacheStore, messageBroker)
-	notificationSvc := service.NewNotificationService(messageBroker)
-
-	// Log that services are initialized (to avoid unused variable warnings)
-	log.Printf("Content Service: %T", contentSvc)
-	log.Printf("Moderation Service: %T", moderationSvc)
-	log.Printf("Notification Service: %T", notificationSvc)
-
-	// ============================================
-	// HTTP Server Setup
-	// ============================================
-
-	mux := http.NewServeMux()
-
-	// Health check endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"status":"healthy","phase":"0","message":"Foundation phase running with mocks"}`)
-	})
-
-	// Readiness check endpoint
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"status":"ready"}`)
-	})
-
-	// Server configuration
-	port := getEnv("HTTP_PORT", "8080")
-	server := &http.Server{
-		Addr:         fmt.Sprintf(":%s", port),
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+	db, err := pgrepo.NewDB()
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
 	}
+	defer db.Close()
+	log.Println("Connected to PostgreSQL")
 
-	// ============================================
-	// Graceful Shutdown
-	// ============================================
+	contentRepo := pgrepo.NewContentRepository(db)
 
-	// Run server in a goroutine
+	broker := mock.NewMockMessageBroker()
+	contentSvc := service.NewContentService(contentRepo, broker)
+
+	// ساخت Fiber app
+	app := fiber.New(fiber.Config{
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	})
+
+	app.Use(requestid.New())
+	app.Use(logger.New(logger.Config{
+		Format: "${pid} ${locals:requestid} ${status} - ${method} ${path} ${latency}\n",
+	}))
+	app.Use(recover.New())
+
+	// ثبت مسیرها
+	http.SetupRoutes(app, contentSvc)
+
+	// Graceful shutdown
 	go func() {
-		log.Printf("Server starting on port %s", port)
-		log.Printf("Health check: http://localhost:%s/health", port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed to start: %v", err)
+		port := os.Getenv("HTTP_PORT")
+		if port == "" {
+			port = "8080"
+		}
+		log.Printf("Starting Fiber server on port %s", port)
+		if err := app.Listen(":" + port); err != nil {
+			log.Fatalf("Server failed: %v", err)
 		}
 	}()
 
-	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
-	log.Printf("Received signal: %v. Starting graceful shutdown...", sig)
+	log.Printf("Received signal %v, shutting down...", sig)
 
-	// Create context with timeout for shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	// Shutdown server
-	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+	if err := app.ShutdownWithContext(ctx); err != nil {
+		log.Fatalf("Forced to shutdown: %v", err)
 	}
-
 	log.Println("Server exited gracefully")
-}
-
-// getEnv returns environment variable value or default
-func getEnv(key, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return defaultValue
 }
