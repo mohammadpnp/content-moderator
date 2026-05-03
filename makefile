@@ -9,6 +9,11 @@ GOFLAGS = -ldflags="-s -w"
 DOCKER_COMPOSE = docker compose
 MAIN_PATH = ./cmd/server
 
+ifneq (,$(wildcard ./.env))
+    include .env
+    export
+endif
+
 # Colors for output
 GREEN  := $(shell tput -Txterm setaf 2)
 YELLOW := $(shell tput -Txterm setaf 3)
@@ -184,3 +189,32 @@ install-tools: ## Install development tools
 .PHONY: init
 init: mod fmt vet test-unit build ## Initialize project (run all checks)
 	@echo "${GREEN}Project initialized successfully!${RESET}"
+
+	# نام دیتابیس و مسیر migrationها
+DB_URL = postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)?sslmode=$(DB_SSLMODE)
+MIGRATIONS_PATH = deploy/migrations
+
+.PHONY: migrate-up
+migrate-up: ## اجرای همه migrationها (up)
+	@echo "${YELLOW}Running migrations up...${RESET}"
+	migrate -path $(MIGRATIONS_PATH) -database "$(DB_URL)" up
+
+.PHONY: migrate-down
+migrate-down: ## بازگردانی همه migrationها (down)
+	@echo "${YELLOW}Running migrations down...${RESET}"
+	migrate -path $(MIGRATIONS_PATH) -database "$(DB_URL)" down
+
+.PHONY: migrate-drop
+migrate-drop: ## حذف کامل دیتابیس (drop)
+	@echo "${YELLOW}Dropping all tables...${RESET}"
+	migrate -path $(MIGRATIONS_PATH) -database "$(DB_URL)" drop
+
+.PHONY: migrate-create
+migrate-create: ## ساخت فایل migration جدید (usage: make migrate-create NAME=xxx)
+	@echo "${YELLOW}Creating migration: $(NAME)...${RESET}"
+	migrate create -ext sql -dir $(MIGRATIONS_PATH) -seq $(NAME)
+
+.PHONY: migrate-version
+migrate-version: ## نمایش نسخه فعلی migration
+	@echo "${YELLOW}Current migration version:${RESET}"
+	migrate -path $(MIGRATIONS_PATH) -database "$(DB_URL)" version

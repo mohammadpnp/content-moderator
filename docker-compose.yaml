@@ -7,25 +7,26 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/Dockerfile
-    container_name: content-moderator
     ports:
-      - "8080:8080"
-      - "9090:9090"
-      - "6060:6060"
+      - "${HTTP_PORT}:${HTTP_PORT}"
+      - "${GRPC_PORT}:${GRPC_PORT}"
+      - "${PPROF_PORT}:${PPROF_PORT}"
     environment:
-      - ENVIRONMENT=development
+      - ENVIRONMENT=${ENVIRONMENT}
       - DB_HOST=postgres
       - DB_PORT=5432
-      - DB_USER=moderator
-      - DB_PASSWORD=moderator123
-      - DB_NAME=content_moderator
-      - DB_SSLMODE=disable
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - DB_SSLMODE=${DB_SSLMODE}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - NATS_HOST=nats
       - NATS_PORT=4222
-      - LOG_LEVEL=debug
-      - HTTP_PORT=8080
+      - LOG_LEVEL=${LOG_LEVEL}
+      - HTTP_PORT=${HTTP_PORT}
+      - GRPC_PORT=${GRPC_PORT}
+      - PPROF_PORT=${PPROF_PORT}
     networks:
       - moderator-network
     restart: unless-stopped
@@ -35,18 +36,17 @@ services:
   # ============================================
   postgres:
     image: postgres:16-alpine
-    container_name: moderator-postgres
     environment:
-      - POSTGRES_USER=moderator
-      - POSTGRES_PASSWORD=moderator123
-      - POSTGRES_DB=content_moderator
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
-      - "5432:5432"
+      - "${DB_PORT}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./deploy/docker/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U moderator -d content_moderator"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -63,7 +63,7 @@ services:
     container_name: moderator-redis
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -84,8 +84,8 @@ services:
     container_name: moderator-nats
     command: "-js -m 8222 --server_name moderator-nats"
     ports:
-      - "4222:4222"   # Client port
-      - "8222:8222"   # Monitoring port
+      - "${NATS_PORT}:4222"
+      - "8222:8222"
     volumes:
       - nats-data:/data
     healthcheck:

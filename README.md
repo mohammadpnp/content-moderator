@@ -9,8 +9,16 @@
 - **internal/adapter/**: پیاده‌سازی‌های زیرساختی
 
 ## تکنولوژی‌ها
-- Go 1.22+
+- Go 1.25+
 - PostgreSQL + sqlx
 - Redis
 - NATS
 - Triton Inference Server
+
+# کپی فایل تنظیمات نمونه
+cp .env.example .env
+
+# (در صورت نیاز ویرایش فایل .env)
+
+# اجرا با داکر
+make docker-up

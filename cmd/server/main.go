@@ -10,11 +10,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/mohammadpnp/content-moderator/internal/service"
 	"github.com/mohammadpnp/content-moderator/test/mock"
 )
 
 func main() {
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, using system environment variables")
+	}
+
 	log.Println("Starting Content Moderator Service (Phase 0 - Foundation)...")
 
 	// ============================================
