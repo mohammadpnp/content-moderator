@@ -21,10 +21,10 @@ func NewDB() (*sqlx.DB, error) {
 	)
 	db, err := sqlx.Connect("postgres", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("db connection failed: %w", err)
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// تنظیمات Connection Pool (مطابق داکیومنت)
+	// Connection pool settings (as per documentation)
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(10)
 	db.SetConnMaxLifetime(5 * time.Minute)

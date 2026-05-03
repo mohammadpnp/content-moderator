@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/joho/godotenv"
 
 	"github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http"
+	custommiddleware "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
 	pgrepo "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	"github.com/mohammadpnp/content-moderator/internal/service"
 	"github.com/mohammadpnp/content-moderator/test/mock"
@@ -49,6 +51,11 @@ func main() {
 		Format: "${pid} ${locals:requestid} ${status} - ${method} ${path} ${latency}\n",
 	}))
 	app.Use(recover.New())
+	app.Use(custommiddleware.TimeoutMiddleware(30 * time.Second))
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: "*",
+		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
+	}))
 
 	// ثبت مسیرها
 	http.SetupRoutes(app, contentSvc)

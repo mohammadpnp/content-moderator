@@ -38,8 +38,10 @@ func (s *ContentServiceImpl) CreateContent(ctx context.Context, userID string, c
 		return nil, fmt.Errorf("failed to save content: %w", err)
 	}
 
-	if err := s.messageBroker.PublishModerationJob(ctx, content); err != nil {
-		log.Printf("WARNING: failed to publish moderation job for content %s: %v", content.ID, err)
+	if s.messageBroker != nil {
+		if err := s.messageBroker.PublishModerationJob(ctx, content); err != nil {
+			log.Printf("WARNING: failed to publish moderation job for content %s: %v", content.ID, err)
+		}
 	}
 
 	return content, nil
