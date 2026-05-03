@@ -17,6 +17,7 @@ import (
 
 	"github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http"
 	custommiddleware "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
+	"github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	pgrepo "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	"github.com/mohammadpnp/content-moderator/internal/service"
 	"github.com/mohammadpnp/content-moderator/test/mock"
@@ -32,6 +33,9 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+	if err := postgres.RunMigrations(); err != nil {
+		log.Fatalf("Migration error: %v", err)
+	}
 	log.Println("Connected to PostgreSQL")
 
 	contentRepo := pgrepo.NewContentRepository(db)

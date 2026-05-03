@@ -41,6 +41,7 @@ COPY --from=builder /app/bin/server /app/server
 
 # Copy any configuration files if they exist
 COPY --from=builder /app/deploy/docker/entrypoint.sh /app/entrypoint.sh
+COPY --from=builder /app/deploy/migrations /app/deploy/migrations
 RUN chmod +x /app/entrypoint.sh
 
 # Use non-root user

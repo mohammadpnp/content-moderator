@@ -2,11 +2,10 @@ package http
 
 import (
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 
-	"github.com/go-playground/validator"
+	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
 	"github.com/mohammadpnp/content-moderator/internal/domain/entity"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/inbound"
@@ -48,10 +47,7 @@ func (h *ContentHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
 	content, err := h.service.GetContent(c.UserContext(), id)
 	if err != nil {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{
-			"error": "content not found",
-			"code":  http.StatusNotFound,
-		})
+		return errorResponse(c, fiber.StatusNotFound, "content not found")
 	}
 	return c.JSON(content)
 }
@@ -72,10 +68,7 @@ func (h *ContentHandler) List(c *fiber.Ctx) error {
 
 	contents, err := h.service.ListUserContents(c.UserContext(), userID, limit, offset)
 	if err != nil {
-		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
-			"error": err.Error(),
-			"code":  http.StatusInternalServerError,
-		})
+		return errorResponse(c, fiber.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(contents)
 }
@@ -84,13 +77,12 @@ func (h *ContentHandler) Delete(c *fiber.Ctx) error {
 	id := c.Params("id")
 	err := h.service.DeleteContent(c.UserContext(), id)
 	if err != nil {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{
-			"error": "content not found",
-			"code":  http.StatusNotFound,
-		})
+		return errorResponse(c, fiber.StatusNotFound, "content not found")
 	}
-	return c.SendStatus(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
+
+// helper functions
 
 func errorResponse(c *fiber.Ctx, status int, message string) error {
 	return c.Status(status).JSON(fiber.Map{
