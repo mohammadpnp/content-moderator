@@ -11,8 +11,6 @@ echo "Go Version: $(go version 2>/dev/null || echo 'not available')"
 # In production, you might want to wait for PostgreSQL, Redis, NATS
 
 echo "Running database migrations..."
-# Will be implemented in Phase 1
-# For now, just a placeholder
 
 echo "Starting server..."
 exec /app/server

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -33,9 +35,26 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
-	if err := postgres.RunMigrations(); err != nil {
+
+	projectRoot, err := postgres.FindProjectRoot()
+	if err != nil {
+		log.Fatalf("Cannot find project root: %v", err)
+	}
+	migrationDir := filepath.Join(projectRoot, "deploy", "migrations")
+
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		os.Getenv("DB_USER"),
+		os.Getenv("DB_PASSWORD"),
+		os.Getenv("DB_HOST"),
+		os.Getenv("DB_PORT"),
+		os.Getenv("DB_NAME"),
+		os.Getenv("DB_SSLMODE"),
+	)
+
+	if err := postgres.RunMigrations(migrationDir, dsn); err != nil {
 		log.Fatalf("Migration error: %v", err)
 	}
+
 	log.Println("Connected to PostgreSQL")
 
 	contentRepo := pgrepo.NewContentRepository(db)
