@@ -10,6 +10,7 @@ require (
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.10.9
+	github.com/sony/gobreaker v1.0.0
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/grpc v1.74.2
 	google.golang.org/protobuf v1.36.7
