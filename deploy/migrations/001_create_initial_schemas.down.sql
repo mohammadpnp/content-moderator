@@ -1,3 +1,4 @@
+DROP TABLE IF EXISTS moderation_results;
 DROP TRIGGER IF EXISTS update_contents_updated_at ON contents;
 DROP FUNCTION IF EXISTS update_updated_at_column();
 DROP INDEX IF EXISTS idx_contents_created_at;

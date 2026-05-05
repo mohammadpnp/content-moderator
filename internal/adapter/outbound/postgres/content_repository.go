@@ -82,9 +82,13 @@ func (r *ContentRepository) UpdateStatus(ctx context.Context, id string, status 
 }
 
 func (r *ContentRepository) Delete(ctx context.Context, id string) error {
-	_, err := r.db.ExecContext(ctx, "DELETE FROM contents WHERE id = $1", id)
+	result, err := r.db.ExecContext(ctx, "DELETE FROM contents WHERE id = $1", id)
 	if err != nil {
 		return fmt.Errorf("delete error: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("content not found: %s", id)
 	}
 	return nil
 }
