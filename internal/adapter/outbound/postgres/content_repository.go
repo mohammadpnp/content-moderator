@@ -92,3 +92,7 @@ func (r *ContentRepository) Delete(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+func (r *ContentRepository) Stats() sql.DBStats {
+	return r.db.Stats()
+}
