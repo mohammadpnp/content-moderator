@@ -1,9 +1,12 @@
+// cmd/server/main.go
+
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,7 +19,12 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/joho/godotenv"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 
+	"github.com/mohammadpnp/content-moderator/api/content"
+	"github.com/mohammadpnp/content-moderator/api/moderation"
+	customgrpc "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/grpc"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http"
 	custommiddleware "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
@@ -57,12 +65,19 @@ func main() {
 
 	log.Println("Connected to PostgreSQL")
 
+	// Repositories
 	contentRepo := pgrepo.NewContentRepository(db)
 
+	// Mock components (will be replaced with real ones in later phases)
 	broker := mock.NewMockMessageBroker()
-	contentSvc := service.NewContentService(contentRepo, broker)
+	aiClient := mock.NewMockAIClient()
+	cacheStore := mock.NewMockCacheStore()
 
-	// ساخت Fiber app
+	// Services
+	contentSvc := service.NewContentService(contentRepo, broker)
+	moderationSvc := service.NewModerationService(contentRepo, aiClient, cacheStore, broker)
+
+	// --- HTTP server (Fiber) ---
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -80,30 +95,56 @@ func main() {
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
 	}))
 
-	// ثبت مسیرها
 	http.SetupRoutes(app, contentSvc)
 
-	// Graceful shutdown
+	// --- gRPC server ---
+	grpcServer := grpc.NewServer()
+	// Register services
+	content.RegisterContentServiceServer(grpcServer, customgrpc.NewContentServer(contentSvc, moderationSvc))
+	moderation.RegisterModerationServiceServer(grpcServer, customgrpc.NewModerationServer(moderationSvc))
+	reflection.Register(grpcServer) // enables gRPC reflection for debugging
+
+	// Start HTTP server
 	go func() {
 		port := os.Getenv("HTTP_PORT")
 		if port == "" {
 			port = "8080"
 		}
-		log.Printf("Starting Fiber server on port %s", port)
+		log.Printf("Starting Fiber HTTP server on port %s", port)
 		if err := app.Listen(":" + port); err != nil {
-			log.Fatalf("Server failed: %v", err)
+			log.Fatalf("HTTP server failed: %v", err)
 		}
 	}()
 
+	// Start gRPC server
+	go func() {
+		grpcPort := os.Getenv("GRPC_PORT")
+		if grpcPort == "" {
+			grpcPort = "9090"
+		}
+		lis, err := net.Listen("tcp", ":"+grpcPort)
+		if err != nil {
+			log.Fatalf("Failed to listen on gRPC port: %v", err)
+		}
+		log.Printf("Starting gRPC server on port %s", grpcPort)
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("gRPC server failed: %v", err)
+		}
+	}()
+
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 	log.Printf("Received signal %v, shutting down...", sig)
 
+	// Shutdown HTTP
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := app.ShutdownWithContext(ctx); err != nil {
-		log.Fatalf("Forced to shutdown: %v", err)
+		log.Fatalf("HTTP forced shutdown: %v", err)
 	}
-	log.Println("Server exited gracefully")
+	// Shutdown gRPC
+	grpcServer.GracefulStop()
+	log.Println("Both servers exited gracefully")
 }
