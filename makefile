@@ -220,14 +220,21 @@ migrate-version: ## نمایش نسخه فعلی migration
 	migrate -path $(MIGRATIONS_PATH) -database "$(DB_URL)" version
 
 PROTO_DIR := api
-PROTO_FILES := $(PROTO_DIR)/*.proto
+TRITON_PROTO_DIR := api/triton/proto
 
 .PHONY: proto
 proto: ## Generate gRPC code from proto files
-	@echo "${YELLOW}Generating protobuf & gRPC code...${RESET}"
+	@echo "${YELLOW}Generating application gRPC code...${RESET}"
 	mkdir -p api/content api/moderation
-	protoc --proto_path=api \
+	protoc --proto_path=$(PROTO_DIR) \
 	       --go_out=. --go_opt=module=github.com/mohammadpnp/content-moderator \
 	       --go-grpc_out=. --go-grpc_opt=module=github.com/mohammadpnp/content-moderator \
-	       api/*.proto
+	       $(PROTO_DIR)/*.proto
+
+	@echo "${YELLOW}Generating Triton gRPC code...${RESET}"
+	mkdir -p api/triton
+	protoc --proto_path=$(TRITON_PROTO_DIR) \
+	       --go_out=api/triton --go_opt=paths=source_relative \
+	       --go-grpc_out=api/triton --go-grpc_opt=paths=source_relative \
+	       $(TRITON_PROTO_DIR)/*.proto
 	@echo "${GREEN}Proto generation complete${RESET}"
