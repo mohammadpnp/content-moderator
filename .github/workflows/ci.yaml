@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: moderator
+          POSTGRES_PASSWORD: moderator123
+          POSTGRES_DB: content_moderator
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Verify formatting
+        run: gofmt -l . && [ -z "$(gofmt -l .)" ]
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+      - name: Run unit tests
+        run: go test -v -race -coverprofile=coverage.out ./internal/...
+
+      - name: Check test coverage
+        run: |
+          go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//' > coverage_percent.txt
+          COVERAGE=$(cat coverage_percent.txt)
+          echo "Coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "Test coverage below 80% ($COVERAGE%)"
+            exit 1
+          fi
