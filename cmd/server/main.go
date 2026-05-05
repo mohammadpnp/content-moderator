@@ -24,7 +24,7 @@ import (
 
 	"github.com/mohammadpnp/content-moderator/api/content"
 	"github.com/mohammadpnp/content-moderator/api/moderation"
-	customgrpc "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/grpc"
+	grpc_internal "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/grpc"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http"
 	custommiddleware "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
@@ -98,12 +98,21 @@ func main() {
 	http.SetupRoutes(app, contentSvc)
 
 	// --- gRPC server ---
-	grpcServer := grpc.NewServer()
+	// cmd/server/main.go (بخش gRPC)
+	grpcServer := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(
+			grpc_internal.RecoveryUnaryInterceptor(),
+			grpc_internal.LoggingUnaryInterceptor(),
+		),
+		grpc.ChainStreamInterceptor(
+			grpc_internal.RecoveryStreamInterceptor(),
+			grpc_internal.LoggingStreamInterceptor(),
+		),
+	)
 	// Register services
-	content.RegisterContentServiceServer(grpcServer, customgrpc.NewContentServer(contentSvc, moderationSvc))
-	moderation.RegisterModerationServiceServer(grpcServer, customgrpc.NewModerationServer(moderationSvc))
-	reflection.Register(grpcServer) // enables gRPC reflection for debugging
-
+	content.RegisterContentServiceServer(grpcServer, grpc_internal.NewContentServer(contentSvc, moderationSvc))
+	moderation.RegisterModerationServiceServer(grpcServer, grpc_internal.NewModerationServer(moderationSvc))
+	reflection.Register(grpcServer)
 	// Start HTTP server
 	go func() {
 		port := os.Getenv("HTTP_PORT")
