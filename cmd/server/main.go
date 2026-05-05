@@ -30,6 +30,10 @@ import (
 	pgrepo "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	"github.com/mohammadpnp/content-moderator/internal/service"
 	"github.com/mohammadpnp/content-moderator/test/mock"
+	"go.opentelemetry.io/otel"
+	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func main() {
@@ -63,6 +67,13 @@ func main() {
 	}
 
 	log.Println("Connected to PostgreSQL")
+
+	// Tracer
+	tracerProvider, err := initTracer()
+	if err != nil {
+		log.Fatalf("Failed to initialize tracer: %v", err)
+	}
+	defer tracerProvider.Shutdown(context.Background())
 
 	// Repositories
 	contentRepo := pgrepo.NewContentRepository(db)
@@ -118,10 +129,16 @@ func main() {
 		grpc.ChainUnaryInterceptor(
 			grpcadapter.RecoveryUnaryInterceptor(),
 			grpcadapter.LoggingUnaryInterceptor(),
+			grpcadapter.MetricsUnaryInterceptor(),
+			grpcadapter.AuthUnaryInterceptor(),
+			grpcadapter.TracingUnaryInterceptor(),
 		),
 		grpc.ChainStreamInterceptor(
 			grpcadapter.RecoveryStreamInterceptor(),
 			grpcadapter.LoggingStreamInterceptor(),
+			grpcadapter.MetricsStreamInterceptor(),
+			grpcadapter.AuthStreamInterceptor(),
+			grpcadapter.TracingStreamInterceptor(),
 		),
 	)
 
@@ -176,4 +193,21 @@ func main() {
 	}
 	grpcServer.GracefulStop()
 	log.Println("Both servers exited gracefully")
+}
+
+func initTracer() (*sdktrace.TracerProvider, error) {
+	exporter, err := stdout.New(stdout.WithPrettyPrint())
+	if err != nil {
+		return nil, err
+	}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+	return tp, nil
 }
