@@ -30,14 +30,14 @@ const (
 )
 
 type Content struct {
-	ID           string        `json:"id"`
-	UserID       string        `json:"user_id"`
-	Type         ContentType   `json:"type"`
-	Body         string        `json:"body"`
-	Status       ContentStatus `json:"status"`
-	ModerationID *string       `json:"moderation_id,omitempty"` // nullable
-	CreatedAt    time.Time     `json:"created_at"`
-	UpdatedAt    time.Time     `json:"updated_at"`
+	ID           string        `json:"id" db:"id"`
+	UserID       string        `json:"user_id" db:"user_id"`
+	Type         ContentType   `json:"type" db:"type"`
+	Body         string        `json:"body" db:"body"`
+	Status       ContentStatus `json:"status" db:"status"`
+	ModerationID *string       `json:"moderation_id,omitempty" db:"moderation_id"`
+	CreatedAt    time.Time     `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time     `json:"updated_at" db:"updated_at"`
 }
 
 func NewContent(userID string, contentType ContentType, body string) (*Content, error) {
