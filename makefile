@@ -218,3 +218,16 @@ migrate-create: ## ساخت فایل migration جدید (usage: make migrate-cre
 migrate-version: ## نمایش نسخه فعلی migration
 	@echo "${YELLOW}Current migration version:${RESET}"
 	migrate -path $(MIGRATIONS_PATH) -database "$(DB_URL)" version
+
+PROTO_DIR := api
+PROTO_FILES := $(PROTO_DIR)/*.proto
+
+.PHONY: proto
+proto: ## Generate gRPC code from proto files
+	@echo "${YELLOW}Generating protobuf & gRPC code...${RESET}"
+	mkdir -p api/content api/moderation
+	protoc --proto_path=api \
+	       --go_out=. --go_opt=module=github.com/mohammadpnp/content-moderator \
+	       --go-grpc_out=. --go-grpc_opt=module=github.com/mohammadpnp/content-moderator \
+	       api/*.proto
+	@echo "${GREEN}Proto generation complete${RESET}"

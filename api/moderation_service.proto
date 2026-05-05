@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package moderation;
+
+option go_package = "github.com/mohammadpnp/content-moderator/api/moderation;moderation";
+
+import "google/protobuf/timestamp.proto";
+
+service ModerationService {
+  // ModerateContent performs bidirectional streaming moderation.
+  // The client sends content identifiers and receives moderation results.
+  rpc ModerateContent(stream ModerateContentRequest) returns (stream ModerateContentResponse);
+
+  // GetModelHealth returns the health status of the AI model.
+  rpc GetModelHealth(GetModelHealthRequest) returns (GetModelHealthResponse);
+}
+
+// --- Message types ---
+
+message ModerateContentRequest {
+  string content_id = 1;
+  string content_type = 2;  // "text" or "image"
+  string body = 3;          // actual text or image URL
+}
+
+message ModerateContentResponse {
+  string content_id = 1;
+  ModerationResult result = 2;
+}
+
+message ModerationResult {
+  string id = 1;
+  string content_id = 2;
+  bool is_approved = 3;
+  double score = 4;
+  repeated string categories = 5;
+  string model_name = 6;
+  int64 duration_ms = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message GetModelHealthRequest {}
+
+message GetModelHealthResponse {
+  bool healthy = 1;
+}

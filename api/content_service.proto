@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package content;
+
+option go_package = "github.com/mohammadpnp/content-moderator/api/content;content";
+
+import "google/protobuf/timestamp.proto";
+
+// ContentService defines RPCs for managing user content.
+service ContentService {
+  // CreateContent creates a new content item and returns it.
+  rpc CreateContent(CreateContentRequest) returns (CreateContentResponse);
+
+  // GetContent retrieves a single content item by ID.
+  rpc GetContent(GetContentRequest) returns (GetContentResponse);
+
+  // StreamModerationResults streams moderation results for a user's content.
+  // The server pushes results as they become available.
+  rpc StreamModerationResults(StreamModerationResultsRequest) returns (stream ModerationResult);
+}
+
+// --- Message types ---
+
+enum ContentType {
+  CONTENT_TYPE_UNSPECIFIED = 0;
+  CONTENT_TYPE_TEXT = 1;
+  CONTENT_TYPE_IMAGE = 2;
+}
+
+enum ContentStatus {
+  CONTENT_STATUS_UNSPECIFIED = 0;
+  CONTENT_STATUS_PENDING = 1;
+  CONTENT_STATUS_APPROVED = 2;
+  CONTENT_STATUS_REJECTED = 3;
+}
+
+message Content {
+  string id = 1;
+  string user_id = 2;
+  ContentType type = 3;
+  string body = 4;
+  ContentStatus status = 5;
+  optional string moderation_id = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message ModerationResult {
+  string id = 1;
+  string content_id = 2;
+  bool is_approved = 3;
+  double score = 4;
+  repeated string categories = 5; // e.g., "hate", "spam"
+  string model_name = 6;
+  int64 duration_ms = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+// --- Request / Response messages ---
+
+message CreateContentRequest {
+  string user_id = 1;
+  ContentType type = 2;
+  string body = 3;
+}
+
+message CreateContentResponse {
+  Content content = 1;
+}
+
+message GetContentRequest {
+  string id = 1;
+}
+
+message GetContentResponse {
+  Content content = 1;
+}
+
+message StreamModerationResultsRequest {
+  string user_id = 1;
+}
