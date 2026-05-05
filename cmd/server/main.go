@@ -1,5 +1,4 @@
 // cmd/server/main.go
-
 package main
 
 import (
@@ -24,7 +23,7 @@ import (
 
 	"github.com/mohammadpnp/content-moderator/api/content"
 	"github.com/mohammadpnp/content-moderator/api/moderation"
-	grpc_internal "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/grpc"
+	grpcadapter "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/grpc"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http"
 	custommiddleware "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
@@ -68,16 +67,31 @@ func main() {
 	// Repositories
 	contentRepo := pgrepo.NewContentRepository(db)
 
-	// Mock components (will be replaced with real ones in later phases)
+	// Message broker (mock for now)
 	broker := mock.NewMockMessageBroker()
-	aiClient := mock.NewMockAIClient()
+
+	// Cache (mock for now)
 	cacheStore := mock.NewMockCacheStore()
+
+	// AI Client
+	// TODO: Replace with real TritonClient + CircuitBreaker when TRITON_HOST is set
+	aiClient := mock.NewMockAIClient()
+	// tritonHost := os.Getenv("TRITON_HOST")
+	// if tritonHost != "" {
+	//     tc, err := tritonadapter.NewTritonClient(tritonHost + ":8001")
+	//     if err != nil {
+	//         log.Fatalf("Failed to create Triton client: %v", err)
+	//     }
+	//     aiClient = tritonadapter.NewCircuitBreakerAIClient(tc)
+	// }
 
 	// Services
 	contentSvc := service.NewContentService(contentRepo, broker)
 	moderationSvc := service.NewModerationService(contentRepo, aiClient, cacheStore, broker)
 
-	// --- HTTP server (Fiber) ---
+	// ========================
+	// HTTP server (Fiber)
+	// ========================
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -97,23 +111,30 @@ func main() {
 
 	http.SetupRoutes(app, contentSvc)
 
-	// --- gRPC server ---
-	// cmd/server/main.go (بخش gRPC)
+	// ========================
+	// gRPC server
+	// ========================
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
-			grpc_internal.RecoveryUnaryInterceptor(),
-			grpc_internal.LoggingUnaryInterceptor(),
+			grpcadapter.RecoveryUnaryInterceptor(),
+			grpcadapter.LoggingUnaryInterceptor(),
 		),
 		grpc.ChainStreamInterceptor(
-			grpc_internal.RecoveryStreamInterceptor(),
-			grpc_internal.LoggingStreamInterceptor(),
+			grpcadapter.RecoveryStreamInterceptor(),
+			grpcadapter.LoggingStreamInterceptor(),
 		),
 	)
-	// Register services
-	content.RegisterContentServiceServer(grpcServer, grpc_internal.NewContentServer(contentSvc, moderationSvc))
-	moderation.RegisterModerationServiceServer(grpcServer, grpc_internal.NewModerationServer(moderationSvc))
+
+	// Register gRPC services
+	content.RegisterContentServiceServer(grpcServer, grpcadapter.NewContentServer(contentSvc, moderationSvc))
+	moderation.RegisterModerationServiceServer(grpcServer, grpcadapter.NewModerationServer(moderationSvc))
+
+	// Enable reflection for debugging tools like grpcurl
 	reflection.Register(grpcServer)
-	// Start HTTP server
+
+	// ========================
+	// Start servers
+	// ========================
 	go func() {
 		port := os.Getenv("HTTP_PORT")
 		if port == "" {
@@ -125,7 +146,6 @@ func main() {
 		}
 	}()
 
-	// Start gRPC server
 	go func() {
 		grpcPort := os.Getenv("GRPC_PORT")
 		if grpcPort == "" {
@@ -141,19 +161,19 @@ func main() {
 		}
 	}()
 
+	// ========================
 	// Graceful shutdown
+	// ========================
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 	log.Printf("Received signal %v, shutting down...", sig)
 
-	// Shutdown HTTP
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := app.ShutdownWithContext(ctx); err != nil {
 		log.Fatalf("HTTP forced shutdown: %v", err)
 	}
-	// Shutdown gRPC
 	grpcServer.GracefulStop()
 	log.Println("Both servers exited gracefully")
 }
