@@ -1,4 +1,3 @@
-// cmd/server/main.go
 package main
 
 import (
@@ -28,10 +27,10 @@ import (
 	custommiddleware "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
 	natsadapter "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/nats"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
-	pgrepo "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	"github.com/mohammadpnp/content-moderator/internal/service"
 	"github.com/mohammadpnp/content-moderator/internal/worker"
 	"github.com/mohammadpnp/content-moderator/test/mock"
+
 	"go.opentelemetry.io/otel"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
@@ -39,11 +38,24 @@ import (
 )
 
 func main() {
+	// ── ۱. بارگذاری تنظیمات ──────────────────────────────────────
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using system environment variables")
 	}
 
-	db, err := pgrepo.NewDB()
+	// ── ۲. راه‌اندازی Tracer ─────────────────────────────────────
+	tracerProvider, err := initTracer()
+	if err != nil {
+		log.Fatalf("Failed to initialize tracer: %v", err)
+	}
+	defer func() {
+		if err := tracerProvider.Shutdown(context.Background()); err != nil {
+			log.Printf("Tracer shutdown error: %v", err)
+		}
+	}()
+
+	// ── ۳. اتصال به PostgreSQL و اجرای Migration ─────────────────
+	db, err := postgres.NewDB()
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -70,59 +82,55 @@ func main() {
 	if err := postgres.RunMigrations(migrationDir, dsn); err != nil {
 		log.Fatalf("Migration error: %v", err)
 	}
-
 	log.Println("Connected to PostgreSQL")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Tracer
-	tracerProvider, err := initTracer()
-	if err != nil {
-		log.Fatalf("Failed to initialize tracer: %v", err)
-	}
-	defer tracerProvider.Shutdown(context.Background())
-
-	// Repositories
-	contentRepo := pgrepo.NewContentRepository(db)
-
-	// Message broker
+	// ── ۴. راه‌اندازی سرویس‌های زیرساختی ─────────────────────────
+	// NATS
 	natsBroker, err := natsadapter.NewNATSBroker()
 	if err != nil {
 		log.Fatalf("Failed to connect to NATS: %v", err)
 	}
 	defer natsBroker.Close()
-	broker := natsBroker
 
-	// DLQ
+	// Context کلی برنامه (برای انتشار سیگنال خاموشی)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// مانیتورینگ Dead Letter Queue
 	go func() {
 		if err := natsBroker.StartDLQMonitor(ctx); err != nil {
 			log.Printf("Warning: DLQ Monitor failed to start: %v", err)
 		}
 	}()
 
-	// Cache (mock for now)
+	// Cache (فعلاً Mock)
 	cacheStore := mock.NewMockCacheStore()
 
-	// AI Client
-	// TODO: Replace with real TritonClient + CircuitBreaker when TRITON_HOST is set
+	// AI Client (فعلاً Mock)
 	aiClient := mock.NewMockAIClient()
-	// tritonHost := os.Getenv("TRITON_HOST")
-	// if tritonHost != "" {
-	//     tc, err := tritonadapter.NewTritonClient(tritonHost + ":8001")
-	//     if err != nil {
-	//         log.Fatalf("Failed to create Triton client: %v", err)
-	//     }
-	//     aiClient = tritonadapter.NewCircuitBreakerAIClient(tc)
+	// TODO: در آینده با TritonClient جایگزین شود
+	// if tritonHost := os.Getenv("TRITON_HOST"); tritonHost != "" {
+	// 	tc, err := tritonadapter.NewTritonClient(tritonHost + ":8001")
+	// 	if err != nil { log.Fatalf(...) }
+	// 	aiClient = tritonadapter.NewCircuitBreakerAIClient(tc)
 	// }
 
-	// Services
-	contentSvc := service.NewContentService(contentRepo, broker)
-	moderationSvc := service.NewModerationService(contentRepo, aiClient, cacheStore, broker)
+	// Repository
+	contentRepo := postgres.NewContentRepository(db)
 
-	// ========================
-	// HTTP server (Fiber)
-	// ========================
+	// ── ۵. سرویس‌های دامنه ───────────────────────────────────────
+	contentSvc := service.NewContentService(contentRepo, natsBroker)
+	moderationSvc := service.NewModerationService(contentRepo, aiClient, cacheStore, natsBroker)
+
+	// ── ۶. راه‌اندازی Worker Pool ────────────────────────────────
+	pool := worker.NewPool(worker.DefaultConfig(), moderationSvc, natsBroker)
+	go func() {
+		if err := pool.Start(ctx); err != nil {
+			log.Fatalf("Worker pool failed: %v", err)
+		}
+	}()
+
+	// ── ۷. راه‌اندازی HTTP Server (Fiber) ────────────────────────
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -142,9 +150,18 @@ func main() {
 
 	http.SetupRoutes(app, contentSvc)
 
-	// ========================
-	// gRPC server
-	// ========================
+	go func() {
+		port := os.Getenv("HTTP_PORT")
+		if port == "" {
+			port = "8080"
+		}
+		log.Printf("Starting HTTP server on :%s", port)
+		if err := app.Listen(":" + port); err != nil {
+			log.Fatalf("HTTP server failed: %v", err)
+		}
+	}()
+
+	// ── ۸. راه‌اندازی gRPC Server ────────────────────────────────
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			grpcadapter.RecoveryUnaryInterceptor(),
@@ -162,36 +179,9 @@ func main() {
 		),
 	)
 
-	// Register gRPC services
 	content.RegisterContentServiceServer(grpcServer, grpcadapter.NewContentServer(contentSvc, moderationSvc))
 	moderation.RegisterModerationServiceServer(grpcServer, grpcadapter.NewModerationServer(moderationSvc))
-
-	// Enable reflection for debugging tools like grpcurl
 	reflection.Register(grpcServer)
-
-	// Worker Pool
-	workerCfg := worker.DefaultConfig()
-	workerCfg.WorkerCount = 20 // override if needed
-	pool := worker.NewPool(worker.DefaultConfig(), moderationSvc, broker)
-	go func() {
-		if err := pool.Start(ctx); err != nil {
-			log.Fatalf("Worker pool: %v", err)
-		}
-	}()
-
-	// ========================
-	// Start servers
-	// ========================
-	go func() {
-		port := os.Getenv("HTTP_PORT")
-		if port == "" {
-			port = "8080"
-		}
-		log.Printf("Starting Fiber HTTP server on port %s", port)
-		if err := app.Listen(":" + port); err != nil {
-			log.Fatalf("HTTP server failed: %v", err)
-		}
-	}()
 
 	go func() {
 		grpcPort := os.Getenv("GRPC_PORT")
@@ -202,23 +192,21 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to listen on gRPC port: %v", err)
 		}
-		log.Printf("Starting gRPC server on port %s", grpcPort)
+		log.Printf("Starting gRPC server on :%s", grpcPort)
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Fatalf("gRPC server failed: %v", err)
 		}
 	}()
 
-	// ========================
-	// Graceful shutdown
-	// ========================
+	// ── ۹. Graceful Shutdown ─────────────────────────────────────
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	sig := <-quit
+	log.Printf("Received signal %v, shutting down...", sig)
 
-	log.Println("Shutting down gracefully...")
-	cancel() // درخواست توقف Worker Pool و DLQ Monitor
+	cancel() // اعلام توقف به Worker Pool و DLQ Monitor
 
-	// توقف HTTP با تایم‌اوت
+	// توقف HTTP با مهلت
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
@@ -231,6 +219,7 @@ func main() {
 	log.Println("All services stopped")
 }
 
+// ── تابع راه‌انداز Tracer ────────────────────────────────────────
 func initTracer() (*sdktrace.TracerProvider, error) {
 	exporter, err := stdout.New(stdout.WithPrettyPrint())
 	if err != nil {
