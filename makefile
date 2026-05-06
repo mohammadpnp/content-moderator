@@ -8,6 +8,8 @@ GO = go
 GOFLAGS = -ldflags="-s -w"
 DOCKER_COMPOSE = docker compose
 MAIN_PATH = ./cmd/server
+DB_URL = postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)?sslmode=$(DB_SSLMODE)
+MIGRATIONS_PATH = deploy/migrations
 
 ifneq (,$(wildcard ./.env))
     include .env
@@ -189,10 +191,6 @@ install-tools: ## Install development tools
 .PHONY: init
 init: mod fmt vet test-unit build ## Initialize project (run all checks)
 	@echo "${GREEN}Project initialized successfully!${RESET}"
-
-	# نام دیتابیس و مسیر migrationها
-DB_URL = postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)?sslmode=$(DB_SSLMODE)
-MIGRATIONS_PATH = deploy/migrations
 
 .PHONY: migrate-up
 migrate-up: ## اجرای همه migrationها (up)
