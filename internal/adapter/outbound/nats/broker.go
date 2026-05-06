@@ -280,6 +280,8 @@ func ensureConsumer(js nats.JetStreamContext) error {
 		AckPolicy:     nats.AckExplicitPolicy,
 		MaxDeliver:    3,
 		MaxAckPending: 100,
+		// Exponential backoff durations (100ms, 200ms, 400ms)
+		BackOff: []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond},
 	}
 
 	_, err := js.AddConsumer("MODERATION_JOBS", consumerCfg)
@@ -296,42 +298,69 @@ func ensureConsumer(js nats.JetStreamContext) error {
 	return nil
 }
 
-// StartDLQMonitor subscribes to DLQ and logs dead messages.
+// StartDLQMonitor subscribes to max delivery advisories and moves the original message to DLQ.
 func (b *NATSBroker) StartDLQMonitor(ctx context.Context) error {
-	// ابتدا مطمئن شوید استریم MODERATION_JOBS و MODERATION_DLQ وجود دارند (که در ensureStreams انجام می‌شود).
+	// Advisory subject for our consumer
+	advisorySubject := "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.MODERATION_JOBS.moderation-job-consumer"
 
-	// 1. یک Consumer روی استریم اصلی برای خواندن پیام‌های خاص با Sequence
-	//    این کار به صورت دستی انجام می‌شود.
-
-	// 2. Subscribe به رویدادهای MAX_DELIVERIES
-	sub, err := b.js.Subscribe(advisoryMaxDeliver, func(msg *nats.Msg) {
-		// این رویداد شامل اطلاعاتی درباره پیامی است که به MaxDeliver رسیده است.
-		// ما باید آن پیام را از استریم اصلی بخوانیم و در DLQ ذخیره کنیم.
-		log.Printf("DLQ: Received max deliver advisory for message")
-
-		// برای سادگی، می‌توانید بدنه پیام را مستقیماً از همین رویداد دریافت کنید
-		// (بسته به تنظیمات سرور NATS ممکن است بدنه پیام در این رویداد موجود باشد)
-
-		// در غیر این صورت، باید با استفاده از Stream API پیام اصلی را fetch کنید.
-		// در این مثال فرض می‌کنیم بدنه پیام در رویداد موجود است.
-		if len(msg.Data) > 0 {
-			// ذخیره پیام در DLQ
-			dlqMsg := nats.NewMsg(subjectModerationJobDLQ)
-			dlqMsg.Data = msg.Data
-			if _, err := b.js.PublishMsg(dlqMsg, nats.Context(ctx)); err != nil {
-				log.Printf("DLQ: Error publishing to DLQ: %v", err)
-			}
+	sub, err := b.js.Subscribe(advisorySubject, func(msg *nats.Msg) {
+		// Parse the advisory to extract stream and sequence
+		// The advisory payload is a JSON with fields "stream" and "seq" (among others)
+		var advisory struct {
+			Stream string `json:"stream"`
+			Seq    uint64 `json:"stream_seq"` // field name is "stream_seq" in latest NATS
 		}
+		if err := json.Unmarshal(msg.Data, &advisory); err != nil {
+			log.Printf("DLQ: failed to parse advisory: %v", err)
+			msg.Nak() // will retry
+			return
+		}
+
+		if advisory.Stream == "" || advisory.Seq == 0 {
+			log.Printf("DLQ: incomplete advisory data, stream=%q seq=%d", advisory.Stream, advisory.Seq)
+			msg.Nak()
+			return
+		}
+
+		// Fetch the original message from the main stream
+		rawMsg, err := b.js.GetMsg(advisory.Stream, advisory.Seq)
+		if err != nil {
+			log.Printf("DLQ: failed to fetch original message (stream=%s seq=%d): %v", advisory.Stream, advisory.Seq, err)
+			msg.Nak()
+			return
+		}
+
+		// Publish to DLQ stream, preserving headers and data
+		dlqMsg := nats.NewMsg(subjectModerationJobDLQ)
+		dlqMsg.Data = rawMsg.Data
+		if rawMsg.Header != nil {
+			dlqMsg.Header = rawMsg.Header
+		}
+		// Optional: add metadata indicating original stream/seq
+		dlqMsg.Header.Set("X-Original-Stream", advisory.Stream)
+		dlqMsg.Header.Set("X-Original-Seq", fmt.Sprintf("%d", advisory.Seq))
+
+		_, err = b.js.PublishMsg(dlqMsg, nats.Context(ctx))
+		if err != nil {
+			log.Printf("DLQ: error publishing to DLQ: %v", err)
+			msg.Nak()
+			return
+		}
+
+		log.Printf("DLQ: moved message %s/%d to DLQ", advisory.Stream, advisory.Seq)
 		msg.Ack()
 	}, nats.ManualAck())
+
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to subscribe to DLQ advisory: %w", err)
 	}
 
 	go func() {
 		<-ctx.Done()
 		sub.Unsubscribe()
+		log.Println("DLQ monitor subscription closed")
 	}()
+
 	return nil
 }
 
