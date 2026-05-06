@@ -88,7 +88,7 @@ func errorResponse(c *fiber.Ctx, status int, message string) error {
 	return c.Status(status).JSON(fiber.Map{
 		"error":    message,
 		"code":     status,
-		"trace_id": c.GetRespHeader("X-Request-ID"),
+		"trace_id": c.Locals("requestid"),
 	})
 }
 

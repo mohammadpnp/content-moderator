@@ -49,18 +49,14 @@ func (p *Pool) Start(ctx context.Context) error {
 	defer p.cancel()
 
 	// Create rate limiters
-	limiters := make([]*rate.Limiter, p.config.WorkerCount)
-	for i := 0; i < p.config.WorkerCount; i++ {
-		limiters[i] = rate.NewLimiter(rate.Limit(p.config.RateLimit), p.config.RateBurst)
-	}
+	limiter := rate.NewLimiter(rate.Limit(p.config.RateLimit), p.config.RateBurst)
 
-	// Job channel
 	jobCh := make(chan *entity.Content, 1000)
 
 	// Launch workers
 	for i := 0; i < p.config.WorkerCount; i++ {
 		p.wg.Add(1)
-		go p.worker(ctx, i, limiters[i], jobCh)
+		go p.worker(ctx, i, limiter, jobCh)
 	}
 
 	// Subscribe to jobs and feed channel
