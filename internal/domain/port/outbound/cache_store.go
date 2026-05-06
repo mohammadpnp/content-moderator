@@ -9,8 +9,7 @@ import (
 
 type CacheStore interface {
 	GetModerationResult(ctx context.Context, contentID string) (*entity.ModerationResult, error)
-
 	SetModerationResult(ctx context.Context, contentID string, result *entity.ModerationResult, ttl time.Duration) error
-
 	Invalidate(ctx context.Context, key string) error
+	SetIfNotExists(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error)
 }

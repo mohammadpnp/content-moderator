@@ -109,3 +109,24 @@ func (m *MockCacheStore) Clear() {
 	m.items = make(map[string]*cacheItem)
 	m.ShouldError = false
 }
+
+func (m *MockCacheStore) SetIfNotExists(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
+	if m.ShouldError {
+		return false, fmt.Errorf("%s", m.ErrorMsg)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.items[key]; exists {
+		if time.Now().Before(m.items[key].ExpiresAt) {
+			return false, nil
+		}
+	}
+
+	m.items[key] = &cacheItem{
+		Result:    nil, // not used for lock
+		ExpiresAt: time.Now().Add(ttl),
+	}
+	return true, nil
+}

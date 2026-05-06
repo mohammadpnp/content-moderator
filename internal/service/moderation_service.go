@@ -37,6 +37,16 @@ func (s *ModerationServiceImpl) ModerateContent(ctx context.Context, contentID s
 		return nil, errors.New("content ID cannot be empty")
 	}
 
+	// Idempotency check
+	idempotencyKey := "idempotent:moderate:" + contentID
+	acquired, err := s.cacheStore.SetIfNotExists(ctx, idempotencyKey, struct{}{}, 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("idempotency check failed: %w", err)
+	}
+	if !acquired {
+		return nil, fmt.Errorf("content %s is already being processed or was processed recently", contentID)
+	}
+
 	content, err := s.repo.FindByID(ctx, contentID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find content for moderation: %w", err)
