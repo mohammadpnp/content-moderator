@@ -73,6 +73,9 @@ func main() {
 
 	log.Println("Connected to PostgreSQL")
 
+	ctx, cancelMain := context.WithCancel(context.Background())
+	defer cancelMain()
+
 	// Tracer
 	tracerProvider, err := initTracer()
 	if err != nil {
@@ -90,6 +93,12 @@ func main() {
 	}
 	defer natsBroker.Close()
 	broker := natsBroker
+
+	go func() {
+		if err := natsBroker.StartDLQMonitor(ctx); err != nil {
+			log.Printf("Warning: DLQ Monitor failed to start: %v", err)
+		}
+	}()
 
 	// Cache (mock for now)
 	cacheStore := mock.NewMockCacheStore()
@@ -158,9 +167,6 @@ func main() {
 
 	// Enable reflection for debugging tools like grpcurl
 	reflection.Register(grpcServer)
-
-	ctx, cancelMain := context.WithCancel(context.Background())
-	defer cancelMain()
 
 	// Worker Pool
 	workerCfg := worker.DefaultConfig()

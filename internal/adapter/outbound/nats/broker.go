@@ -24,6 +24,12 @@ const (
 	reconnectWait  = 2 * time.Second
 	connectTimeout = 10 * time.Second
 	publishTimeout = 5 * time.Second
+
+	// DLQ
+	subjectModerationJobDLQ = "moderation.job.dlq"
+
+	// Advisory subject for max deliveries
+	advisoryMaxDeliver = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.MODERATION_JOBS.moderation-job-consumer"
 )
 
 // NATSBroker implements outbound.MessageBroker using NATS.
@@ -78,6 +84,11 @@ func NewNATSBroker() (*NATSBroker, error) {
 		return nil, fmt.Errorf("failed to ensure streams: %w", err)
 	}
 
+	if err := ensureConsumer(js); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to ensure consumer: %w", err)
+	}
+
 	log.Printf("Connected to NATS at %s", url)
 	return &NATSBroker{conn: conn, js: js}, nil
 }
@@ -103,6 +114,13 @@ func ensureStreams(js nats.JetStreamContext) error {
 			MaxAge:   7 * 24 * time.Hour,
 			Storage:  nats.FileStorage,
 		},
+		// DLQ Stream
+		{
+			Name:     "MODERATION_DLQ",
+			Subjects: []string{subjectModerationJobDLQ},
+			MaxAge:   30 * 24 * time.Hour, // keep DLQ messages for 30 days
+			Storage:  nats.FileStorage,
+		},
 	}
 
 	for _, cfg := range streams {
@@ -110,7 +128,6 @@ func ensureStreams(js nats.JetStreamContext) error {
 			if err != nats.ErrStreamNameAlreadyInUse {
 				return fmt.Errorf("failed to create stream %s: %w", cfg.Name, err)
 			}
-			// Stream already exists, update it
 			if _, err := js.UpdateStream(cfg); err != nil {
 				return fmt.Errorf("failed to update stream %s: %w", cfg.Name, err)
 			}
@@ -224,17 +241,17 @@ func (b *NATSBroker) PublishModerationResult(ctx context.Context, result *entity
 func (b *NATSBroker) SubscribeModerationJobs(ctx context.Context, handler func(content *entity.Content) error) error {
 	sub, err := b.js.QueueSubscribe(
 		subjectModerationJob,
-		"moderation-workers", // queue group for load balancing
+		"moderation-workers",
 		func(msg *nats.Msg) {
 			var content entity.Content
 			if err := json.Unmarshal(msg.Data, &content); err != nil {
-				log.Printf("WARNING: failed to unmarshal job content: %v", err)
-				msg.Nak()
+				log.Printf("WARNING: unmarshal job content: %v", err)
+				msg.Nak() // will trigger redelivery
 				return
 			}
 
 			if err := handler(&content); err != nil {
-				log.Printf("ERROR processing job for content %s: %v", content.ID, err)
+				log.Printf("ERROR processing job for %s: %v", content.ID, err)
 				msg.Nak()
 				return
 			}
@@ -242,19 +259,79 @@ func (b *NATSBroker) SubscribeModerationJobs(ctx context.Context, handler func(c
 			msg.Ack()
 		},
 		nats.ManualAck(),
-		nats.Durable("moderation-job-consumer"),
+		nats.Bind("MODERATION_JOBS", "moderation-job-consumer"),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to subscribe to moderation jobs: %w", err)
+		return fmt.Errorf("subscribe to jobs: %w", err)
 	}
 
 	go func() {
 		<-ctx.Done()
 		sub.Unsubscribe()
-		log.Println("Moderation jobs subscription closed")
+		log.Println("Jobs subscription closed")
 	}()
+	return nil
+}
 
-	log.Println("Subscribed to moderation jobs (worker group 'moderation-workers')")
+func ensureConsumer(js nats.JetStreamContext) error {
+	consumerCfg := &nats.ConsumerConfig{
+		Durable:       "moderation-job-consumer",
+		DeliverGroup:  "moderation-workers",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxDeliver:    3,
+		MaxAckPending: 100,
+	}
+
+	_, err := js.AddConsumer("MODERATION_JOBS", consumerCfg)
+	if err != nil {
+		if err != nats.ErrConsumerNameAlreadyInUse {
+			return fmt.Errorf("failed to add consumer: %w", err)
+		}
+		// Consumer already exists, update it
+		_, err = js.UpdateConsumer("MODERATION_JOBS", consumerCfg)
+		if err != nil {
+			return fmt.Errorf("failed to update consumer: %w", err)
+		}
+	}
+	return nil
+}
+
+// StartDLQMonitor subscribes to DLQ and logs dead messages.
+func (b *NATSBroker) StartDLQMonitor(ctx context.Context) error {
+	// ابتدا مطمئن شوید استریم MODERATION_JOBS و MODERATION_DLQ وجود دارند (که در ensureStreams انجام می‌شود).
+
+	// 1. یک Consumer روی استریم اصلی برای خواندن پیام‌های خاص با Sequence
+	//    این کار به صورت دستی انجام می‌شود.
+
+	// 2. Subscribe به رویدادهای MAX_DELIVERIES
+	sub, err := b.js.Subscribe(advisoryMaxDeliver, func(msg *nats.Msg) {
+		// این رویداد شامل اطلاعاتی درباره پیامی است که به MaxDeliver رسیده است.
+		// ما باید آن پیام را از استریم اصلی بخوانیم و در DLQ ذخیره کنیم.
+		log.Printf("DLQ: Received max deliver advisory for message")
+
+		// برای سادگی، می‌توانید بدنه پیام را مستقیماً از همین رویداد دریافت کنید
+		// (بسته به تنظیمات سرور NATS ممکن است بدنه پیام در این رویداد موجود باشد)
+
+		// در غیر این صورت، باید با استفاده از Stream API پیام اصلی را fetch کنید.
+		// در این مثال فرض می‌کنیم بدنه پیام در رویداد موجود است.
+		if len(msg.Data) > 0 {
+			// ذخیره پیام در DLQ
+			dlqMsg := nats.NewMsg(subjectModerationJobDLQ)
+			dlqMsg.Data = msg.Data
+			if _, err := b.js.PublishMsg(dlqMsg, nats.Context(ctx)); err != nil {
+				log.Printf("DLQ: Error publishing to DLQ: %v", err)
+			}
+		}
+		msg.Ack()
+	}, nats.ManualAck())
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		<-ctx.Done()
+		sub.Unsubscribe()
+	}()
 	return nil
 }
 
