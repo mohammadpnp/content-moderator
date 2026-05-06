@@ -134,3 +134,17 @@ func (m *MockMessageBroker) Clear() {
 	m.ReceivedResults = make([]*entity.ModerationResult, 0)
 	m.ShouldError = false
 }
+
+func (m *MockMessageBroker) PublishModerationResult(ctx context.Context, result *entity.ModerationResult) error {
+	if m.ShouldError {
+		return fmt.Errorf("%s", m.ErrorMsg)
+	}
+	select {
+	case m.moderationResults <- result:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}

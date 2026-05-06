@@ -26,6 +26,7 @@ import (
 	grpcadapter "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/grpc"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http"
 	custommiddleware "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
+	natsadapter "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/nats"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	pgrepo "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	"github.com/mohammadpnp/content-moderator/internal/service"
@@ -81,8 +82,13 @@ func main() {
 	// Repositories
 	contentRepo := pgrepo.NewContentRepository(db)
 
-	// Message broker (mock for now)
-	broker := mock.NewMockMessageBroker()
+	// Message broker
+	natsBroker, err := natsadapter.NewNATSBroker()
+	if err != nil {
+		log.Fatalf("Failed to connect to NATS: %v", err)
+	}
+	defer natsBroker.Close()
+	broker := natsBroker
 
 	// Cache (mock for now)
 	cacheStore := mock.NewMockCacheStore()

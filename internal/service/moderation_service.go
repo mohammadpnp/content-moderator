@@ -62,13 +62,19 @@ func (s *ModerationServiceImpl) ModerateContent(ctx context.Context, contentID s
 		return nil, fmt.Errorf("AI moderation failed: %w", err)
 	}
 
-	duration := time.Since(startTime).Milliseconds()
-	result.DurationMs = duration
+	// Set metadata
 	result.ContentID = contentID
+	result.DurationMs = time.Since(startTime).Milliseconds()
 
+	// Cache the result
 	cacheTTL := 1 * time.Hour
 	if cacheErr := s.cacheStore.SetModerationResult(ctx, contentID, result, cacheTTL); cacheErr != nil {
 		log.Printf("WARNING: failed to cache moderation result for content %s: %v", contentID, cacheErr)
+	}
+
+	// Publish result to NATS for async processing
+	if pubErr := s.messageBroker.PublishModerationResult(ctx, result); pubErr != nil {
+		log.Printf("WARNING: failed to publish moderation result to NATS: %v", pubErr)
 	}
 
 	return result, nil

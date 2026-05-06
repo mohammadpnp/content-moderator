@@ -11,5 +11,7 @@ type MessageBroker interface {
 
 	SubscribeModerationResults(ctx context.Context, handler func(result *entity.ModerationResult) error) error
 
+	PublishModerationResult(ctx context.Context, result *entity.ModerationResult) error
+
 	PublishNotification(ctx context.Context, notification *entity.Notification) error
 }
