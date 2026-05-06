@@ -30,6 +30,7 @@ import (
 	"github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	pgrepo "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	"github.com/mohammadpnp/content-moderator/internal/service"
+	"github.com/mohammadpnp/content-moderator/internal/worker"
 	"github.com/mohammadpnp/content-moderator/test/mock"
 	"go.opentelemetry.io/otel"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -158,6 +159,19 @@ func main() {
 	// Enable reflection for debugging tools like grpcurl
 	reflection.Register(grpcServer)
 
+	ctx, cancelMain := context.WithCancel(context.Background())
+	defer cancelMain()
+
+	// Worker Pool
+	workerCfg := worker.DefaultConfig()
+	workerCfg.WorkerCount = 20 // override if needed
+	pool := worker.NewPool(worker.DefaultConfig(), moderationSvc, broker)
+	go func() {
+		if err := pool.Start(ctx); err != nil {
+			log.Fatalf("Worker pool: %v", err)
+		}
+	}()
+
 	// ========================
 	// Start servers
 	// ========================
@@ -195,9 +209,12 @@ func main() {
 	sig := <-quit
 	log.Printf("Received signal %v, shutting down...", sig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := app.ShutdownWithContext(ctx); err != nil {
+	cancelMain()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
 		log.Fatalf("HTTP forced shutdown: %v", err)
 	}
 	grpcServer.GracefulStop()

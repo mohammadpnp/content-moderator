@@ -25,6 +25,7 @@ type MockMessageBroker struct {
 	// Error injection
 	ShouldError bool
 	ErrorMsg    string
+	jobHandlers []func(content *entity.Content) error
 }
 
 func NewMockMessageBroker() *MockMessageBroker {
@@ -147,4 +148,24 @@ func (m *MockMessageBroker) PublishModerationResult(ctx context.Context, result 
 	default:
 		return nil
 	}
+}
+
+func (m *MockMessageBroker) SubscribeModerationJobs(ctx context.Context, handler func(content *entity.Content) error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.ShouldError {
+		return fmt.Errorf("%s", m.ErrorMsg)
+	}
+
+	m.jobHandlers = append(m.jobHandlers, handler)
+
+	// For mock, we simulate delivering already published jobs
+	go func() {
+		for _, job := range m.PublishedJobs {
+			handler(job)
+		}
+	}()
+
+	return nil
 }

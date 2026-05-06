@@ -220,5 +220,43 @@ func (b *NATSBroker) PublishModerationResult(ctx context.Context, result *entity
 	return nil
 }
 
+// SubscribeModerationJobs subscribes to incoming moderation jobs.
+func (b *NATSBroker) SubscribeModerationJobs(ctx context.Context, handler func(content *entity.Content) error) error {
+	sub, err := b.js.QueueSubscribe(
+		subjectModerationJob,
+		"moderation-workers", // queue group for load balancing
+		func(msg *nats.Msg) {
+			var content entity.Content
+			if err := json.Unmarshal(msg.Data, &content); err != nil {
+				log.Printf("WARNING: failed to unmarshal job content: %v", err)
+				msg.Nak()
+				return
+			}
+
+			if err := handler(&content); err != nil {
+				log.Printf("ERROR processing job for content %s: %v", content.ID, err)
+				msg.Nak()
+				return
+			}
+
+			msg.Ack()
+		},
+		nats.ManualAck(),
+		nats.Durable("moderation-job-consumer"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to moderation jobs: %w", err)
+	}
+
+	go func() {
+		<-ctx.Done()
+		sub.Unsubscribe()
+		log.Println("Moderation jobs subscription closed")
+	}()
+
+	log.Println("Subscribed to moderation jobs (worker group 'moderation-workers')")
+	return nil
+}
+
 // Verify interface compliance
 var _ outbound.MessageBroker = (*NATSBroker)(nil)
