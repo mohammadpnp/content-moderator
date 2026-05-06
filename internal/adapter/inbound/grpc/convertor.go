@@ -1,4 +1,3 @@
-
 package grpc
 
 import (
@@ -75,22 +74,24 @@ func moderationResultToProto(r *entity.ModerationResult) *moderation.ModerationR
 	}
 }
 
-func moderationResultFromProto(r *moderation.ModerationResult) *entity.ModerationResult {
-	if r == nil {
-		return nil
-	}
-	cats := make([]entity.ModerationCategory, len(r.Categories))
-	for i, cat := range r.Categories {
-		cats[i] = entity.ModerationCategory(cat)
-	}
-	return &entity.ModerationResult{
-		ID:         r.Id,
-		ContentID:  r.ContentId,
-		IsApproved: r.IsApproved,
-		Score:      r.Score,
-		Categories: cats,
-		ModelName:  r.ModelName,
-		DurationMs: r.DurationMs,
-		CreatedAt:  r.CreatedAt.AsTime(),
-	}
-}
+// moderationResultFromProto converts proto ModerationResult to entity.
+// Currently unused; will be used when ModerationServer receives results.
+// func moderationResultFromProto(r *moderation.ModerationResult) *entity.ModerationResult {
+// 	if r == nil {
+// 		return nil
+// 	}
+// 	cats := make([]entity.ModerationCategory, len(r.Categories))
+// 	for i, cat := range r.Categories {
+// 		cats[i] = entity.ModerationCategory(cat)
+// 	}
+// 	return &entity.ModerationResult{
+// 		ID:         r.Id,
+// 		ContentID:  r.ContentId,
+// 		IsApproved: r.IsApproved,
+// 		Score:      r.Score,
+// 		Categories: cats,
+// 		ModelName:  r.ModelName,
+// 		DurationMs: r.DurationMs,
+// 		CreatedAt:  r.CreatedAt.AsTime(),
+// 	}
+// }
