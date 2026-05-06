@@ -73,8 +73,8 @@ func main() {
 
 	log.Println("Connected to PostgreSQL")
 
-	ctx, cancelMain := context.WithCancel(context.Background())
-	defer cancelMain()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Tracer
 	tracerProvider, err := initTracer()
@@ -94,6 +94,7 @@ func main() {
 	defer natsBroker.Close()
 	broker := natsBroker
 
+	// DLQ
 	go func() {
 		if err := natsBroker.StartDLQMonitor(ctx); err != nil {
 			log.Printf("Warning: DLQ Monitor failed to start: %v", err)
@@ -212,19 +213,22 @@ func main() {
 	// ========================
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-quit
-	log.Printf("Received signal %v, shutting down...", sig)
+	<-quit
 
-	cancelMain()
+	log.Println("Shutting down gracefully...")
+	cancel() // درخواست توقف Worker Pool و DLQ Monitor
 
+	// توقف HTTP با تایم‌اوت
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-
 	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
-		log.Fatalf("HTTP forced shutdown: %v", err)
+		log.Printf("HTTP forced shutdown: %v", err)
 	}
+
+	// توقف gRPC
 	grpcServer.GracefulStop()
-	log.Println("Both servers exited gracefully")
+
+	log.Println("All services stopped")
 }
 
 func initTracer() (*sdktrace.TracerProvider, error) {
