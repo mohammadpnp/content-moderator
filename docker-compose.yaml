@@ -27,6 +27,7 @@ services:
       - HTTP_PORT=${HTTP_PORT}
       - GRPC_PORT=${GRPC_PORT}
       - PPROF_PORT=${PPROF_PORT}
+      - MIGRATIONS_DIR=/app/deploy/migrations
     networks:
       - moderator-network
     restart: unless-stopped

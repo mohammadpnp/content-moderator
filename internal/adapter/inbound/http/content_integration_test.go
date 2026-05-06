@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -26,12 +27,24 @@ import (
 func setupIntegrationTest(t *testing.T) (*fiber.App, *postgres.ContentRepository, *sqlx.DB) {
 	t.Helper()
 
-	root, err := postgres.FindProjectRoot()
-	require.NoError(t, err)
-	envPath := filepath.Join(root, ".env")
-	_ = godotenv.Load(envPath)
+	migrationDir := os.Getenv("MIGRATIONS_DIR")
+	if migrationDir == "" {
+		root, err := postgres.FindProjectRoot()
+		require.NoError(t, err)
+		envPath := filepath.Join(root, ".env")
+		_ = godotenv.Load(envPath)
+		migrationDir = filepath.Join(root, "deploy", "migrations")
+	}
 
 	db, err := postgres.NewDB()
+	require.NoError(t, err)
+
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"),
+		os.Getenv("DB_HOST"), os.Getenv("DB_PORT"),
+		os.Getenv("DB_NAME"), os.Getenv("DB_SSLMODE"),
+	)
+	err = postgres.RunMigrations(migrationDir, dsn)
 	require.NoError(t, err)
 
 	_, err = db.Exec("DELETE FROM contents")

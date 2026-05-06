@@ -47,11 +47,14 @@ func main() {
 	}
 	defer db.Close()
 
-	projectRoot, err := postgres.FindProjectRoot()
-	if err != nil {
-		log.Fatalf("Cannot find project root: %v", err)
+	migrationDir := os.Getenv("MIGRATIONS_DIR")
+	if migrationDir == "" {
+		projectRoot, err := postgres.FindProjectRoot()
+		if err != nil {
+			log.Fatalf("Cannot find project root: %v", err)
+		}
+		migrationDir = filepath.Join(projectRoot, "deploy", "migrations")
 	}
-	migrationDir := filepath.Join(projectRoot, "deploy", "migrations")
 
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
 		os.Getenv("DB_USER"),
