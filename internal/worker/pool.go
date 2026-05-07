@@ -87,17 +87,14 @@ func (p *Pool) worker(ctx context.Context, id int, limiter *rate.Limiter, jobs <
 	log.Printf("Worker %d started", id)
 
 	for content := range jobs {
-		// Rate limit
 		if err := limiter.Wait(ctx); err != nil {
 			log.Printf("Worker %d rate limit wait cancelled", id)
 			return
 		}
 
-		// Set job timeout
-		jobCtx, cancel := context.WithTimeout(ctx, p.config.JobTimeout)
-		defer cancel()
-
+		jobCtx, jobCancel := context.WithTimeout(ctx, p.config.JobTimeout)
 		p.processJob(jobCtx, content)
+		jobCancel()
 	}
 	log.Printf("Worker %d stopped", id)
 }
