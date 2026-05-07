@@ -169,3 +169,25 @@ func (m *MockMessageBroker) SubscribeModerationJobs(ctx context.Context, handler
 
 	return nil
 }
+
+func (m *MockMessageBroker) SubscribeNotifications(ctx context.Context, handler func(notification *entity.Notification) error) error {
+	// mock implementation: we can store handler and simulate later if needed
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ShouldError {
+		return fmt.Errorf("%s", m.ErrorMsg)
+	}
+	go func() {
+		for {
+			select {
+			case notif := <-m.notifications:
+				if err := handler(notif); err != nil {
+					fmt.Printf("Error in notification handler: %v\n", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return nil
+}

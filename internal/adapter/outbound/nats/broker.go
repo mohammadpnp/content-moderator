@@ -237,6 +237,32 @@ func (b *NATSBroker) PublishModerationResult(ctx context.Context, result *entity
 	return nil
 }
 
+func (b *NATSBroker) SubscribeNotifications(ctx context.Context, handler func(notification *entity.Notification) error) error {
+	sub, err := b.js.Subscribe(subjectNotification, func(msg *nats.Msg) {
+		var notif entity.Notification
+		if err := json.Unmarshal(msg.Data, &notif); err != nil {
+			log.Printf("WARNING: failed to unmarshal notification: %v", err)
+			msg.Nak()
+			return
+		}
+		if err := handler(&notif); err != nil {
+			log.Printf("ERROR handling notification: %v", err)
+			msg.Nak()
+			return
+		}
+		msg.Ack()
+	}, nats.ManualAck(), nats.Durable("notification-consumer"))
+	if err != nil {
+		return fmt.Errorf("subscribe to notifications: %w", err)
+	}
+	go func() {
+		<-ctx.Done()
+		sub.Unsubscribe()
+		log.Println("Notifications subscription closed")
+	}()
+	return nil
+}
+
 // SubscribeModerationJobs subscribes to incoming moderation jobs.
 func (b *NATSBroker) SubscribeModerationJobs(ctx context.Context, handler func(content *entity.Content) error) error {
 	sub, err := b.js.QueueSubscribe(

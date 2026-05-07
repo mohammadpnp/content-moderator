@@ -31,6 +31,8 @@ import (
 	"github.com/mohammadpnp/content-moderator/internal/worker"
 	"github.com/mohammadpnp/content-moderator/test/mock"
 
+	wsadapter "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/websocket"
+	redisadapter "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/redis"
 	"go.opentelemetry.io/otel"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
@@ -130,6 +132,34 @@ func main() {
 		}
 	}()
 
+	// ── Redis ────────────────────────────────────────────────
+	redisClient, err := redisadapter.NewClient(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	defer redisClient.Close()
+	log.Println("Connected to Redis")
+
+	// ── Realtime Broadcaster (Redis Pub/Sub) ─────────────────
+	broadcaster := redisadapter.NewPubSubAdapter(redisClient)
+
+	// ── WebSocket Hub ────────────────────────────────────────
+	hub := wsadapter.NewHub(broadcaster)
+	go func() {
+		if err := hub.Run(); err != nil {
+			log.Fatalf("WebSocket Hub failed: %v", err)
+		}
+	}()
+	defer hub.Shutdown()
+
+	// ── Notification Bridge ─────────────────────────────────
+	notifBridge := service.NewNotificationBridge(natsBroker, broadcaster)
+	go func() {
+		if err := notifBridge.Start(ctx); err != nil {
+			log.Fatalf("Notification Bridge failed: %v", err)
+		}
+	}()
+
 	// ── ۷. راه‌اندازی HTTP Server (Fiber) ────────────────────────
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  30 * time.Second,
@@ -149,6 +179,7 @@ func main() {
 	}))
 
 	http.SetupRoutes(app, contentSvc)
+	app.Get("/ws", wsadapter.NewWSHandler(hub))
 
 	go func() {
 		port := os.Getenv("HTTP_PORT")
