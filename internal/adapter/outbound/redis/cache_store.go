@@ -1,15 +1,23 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/mohammadpnp/content-moderator/internal/domain/entity"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
 	"github.com/redis/go-redis/v9"
 )
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
 
 type RedisCacheStore struct {
 	client *redis.Client
@@ -38,12 +46,15 @@ func (r *RedisCacheStore) GetModerationResult(ctx context.Context, contentID str
 }
 
 func (r *RedisCacheStore) SetModerationResult(ctx context.Context, contentID string, result *entity.ModerationResult, ttl time.Duration) error {
-	data, err := json.Marshal(result)
-	if err != nil {
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+
+	if err := json.NewEncoder(buf).Encode(result); err != nil {
 		return fmt.Errorf("cache marshal error: %w", err)
 	}
 
-	if err := r.client.Set(ctx, contentID, data, ttl).Err(); err != nil {
+	if err := r.client.Set(ctx, contentID, buf.Bytes(), ttl).Err(); err != nil {
 		return fmt.Errorf("redis set error: %w", err)
 	}
 	return nil
@@ -57,12 +68,15 @@ func (r *RedisCacheStore) Invalidate(ctx context.Context, key string) error {
 }
 
 func (r *RedisCacheStore) SetIfNotExists(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
-	data, err := json.Marshal(value)
-	if err != nil {
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+
+	if err := json.NewEncoder(buf).Encode(value); err != nil {
 		return false, fmt.Errorf("marshal error: %w", err)
 	}
 
-	ok, err := r.client.SetNX(ctx, key, data, ttl).Result()
+	ok, err := r.client.SetNX(ctx, key, buf.Bytes(), ttl).Result()
 	if err != nil {
 		return false, fmt.Errorf("redis setnx error: %w", err)
 	}
