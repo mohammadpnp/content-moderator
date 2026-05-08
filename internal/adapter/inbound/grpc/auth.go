@@ -11,33 +11,33 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// AuthUnaryInterceptor extracts JWT token from gRPC metadata, validates it,
-// and injects the user ID into the context.
 func AuthUnaryInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		userID, err := authenticate(ctx)
 		if err != nil {
 			return nil, err
 		}
-		// Store userID in context for downstream handlers
-		ctx = context.WithValue(ctx, "userID", userID)
+		md, _ := metadata.FromIncomingContext(ctx)
+		md.Set("user-id", userID)
+		ctx = metadata.NewIncomingContext(ctx, md)
 		return handler(ctx, req)
 	}
 }
 
-// AuthStreamInterceptor is the stream version of authentication.
 func AuthStreamInterceptor() grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		userID, err := authenticate(ss.Context())
-		if err != nil {
-			return err
-		}
-		wrapped := &authenticatedStream{
-			ServerStream: ss,
-			ctx:          context.WithValue(ss.Context(), "userID", userID),
-		}
-		return handler(srv, wrapped)
-	}
+    return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+        userID, err := authenticate(ss.Context())
+        if err != nil {
+            return err
+        }
+        md, _ := metadata.FromIncomingContext(ss.Context())
+        md.Set("user-id", userID)
+        wrapped := &authenticatedStream{
+            ServerStream: ss,
+            ctx:          metadata.NewIncomingContext(ss.Context(), md),
+        }
+        return handler(srv, wrapped)
+    }
 }
 
 // authenticate extracts the JWT token from metadata and validates it.

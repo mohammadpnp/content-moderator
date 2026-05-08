@@ -32,7 +32,8 @@ func TestConnectionPoolUnderLoad(t *testing.T) {
 			reqBody := fmt.Sprintf(`{"user_id":"load-test","type":"text","body":"message %d"}`, idx)
 			req := httptest.NewRequest("POST", "/api/v1/contents", bytes.NewBufferString(reqBody))
 			req.Header.Set("Content-Type", "application/json")
-
+			req.Header.Set("Authorization", "Bearer valid-load-test")
+			
 			start := time.Now()
 			resp, err := app.Test(req, -1)
 			durations <- time.Since(start)

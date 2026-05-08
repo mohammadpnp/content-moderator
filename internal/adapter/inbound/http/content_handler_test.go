@@ -53,17 +53,14 @@ func TestCreateContent_Success(t *testing.T) {
 	expected := &entity.Content{
 		ID:     "123",
 		UserID: "user1",
-		Type:   entity.ContentTypeText,
-		Body:   "Hello",
-		Status: entity.ContentStatusPending,
 	}
-
 	mockSvc.On("CreateContent", mock.Anything, "user1", entity.ContentTypeText, "Hello").
 		Return(expected, nil)
 
 	reqBody := `{"user_id":"user1","type":"text","body":"Hello"}`
 	req := httptest.NewRequest("POST", "/api/v1/contents", bytes.NewBufferString(reqBody))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer valid-user1")
 	resp, err := app.Test(req, -1)
 
 	assert.NoError(t, err)
@@ -81,6 +78,7 @@ func TestCreateContent_ValidationError(t *testing.T) {
 	reqBody := `{"user_id":"user1","type":"text","body":""}`
 	req := httptest.NewRequest("POST", "/api/v1/contents", bytes.NewBufferString(reqBody))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer valid-user1")
 	resp, _ := app.Test(req, -1)
 
 	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
@@ -94,6 +92,7 @@ func TestGetContent_Success(t *testing.T) {
 	mockSvc.On("GetContent", mock.Anything, "abc").Return(content, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/contents/abc", nil)
+	req.Header.Set("Authorization", "Bearer valid-user1")
 	resp, _ := app.Test(req, -1)
 
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
@@ -108,6 +107,7 @@ func TestGetContent_NotFound(t *testing.T) {
 	)
 
 	req := httptest.NewRequest("GET", "/api/v1/contents/xyz", nil)
+	req.Header.Set("Authorization", "Bearer valid-user1")
 	resp, _ := app.Test(req, -1)
 
 	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)

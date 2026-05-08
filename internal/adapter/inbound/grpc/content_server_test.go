@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -60,6 +61,8 @@ func TestCreateContent_gRPC(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	md := metadata.Pairs("user-id", "user-1")
+	ctx = metadata.NewOutgoingContext(ctx, md)
 
 	resp, err := client.CreateContent(ctx, &content.CreateContentRequest{
 		UserId: "user-1",
@@ -79,8 +82,9 @@ func TestGetContent_gRPC(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	md := metadata.Pairs("user-id", "user-1")
+	ctx = metadata.NewOutgoingContext(ctx, md)
 
-	// First create
 	createResp, err := client.CreateContent(ctx, &content.CreateContentRequest{
 		UserId: "user-2",
 		Type:   content.ContentType_CONTENT_TYPE_TEXT,
@@ -88,7 +92,6 @@ func TestGetContent_gRPC(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Then get
 	getResp, err := client.GetContent(ctx, &content.GetContentRequest{
 		Id: createResp.Content.Id,
 	})

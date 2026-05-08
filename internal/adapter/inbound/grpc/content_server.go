@@ -8,6 +8,7 @@ import (
 	"github.com/mohammadpnp/content-moderator/api/content"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/inbound"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -23,7 +24,21 @@ func NewContentServer(svc inbound.ContentService, modSvc inbound.ModerationServi
 }
 
 func (s *ContentServer) CreateContent(ctx context.Context, req *content.CreateContentRequest) (*content.CreateContentResponse, error) {
-	c, err := s.svc.CreateContent(ctx, req.UserId, contentTypeFromProto(req.Type), req.Body)
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "metadata not found")
+	}
+
+	userIDs := md.Get("user-id")
+	if len(userIDs) == 0 {
+		return nil, status.Error(codes.Unauthenticated, "user-id not found in metadata")
+	}
+	userID := userIDs[0]
+
+	if !ok || userID == "" {
+		return nil, status.Error(codes.Unauthenticated, "user not authenticated")
+	}
+	c, err := s.svc.CreateContent(ctx, userID, contentTypeFromProto(req.Type), req.Body)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "creating content: %v", err)
 	}
@@ -39,29 +54,43 @@ func (s *ContentServer) GetContent(ctx context.Context, req *content.GetContentR
 }
 
 func (s *ContentServer) StreamModerationResults(req *content.StreamModerationResultsRequest, stream content.ContentService_StreamModerationResultsServer) error {
-	// For now, simply send a static message.
-	// In later phases, this will be replaced with real-time subscription.
-	if req.UserId == "" {
-		return status.Error(codes.InvalidArgument, "user_id is required")
+	md, ok := metadata.FromIncomingContext(stream.Context())
+	if !ok {
+		return status.Error(codes.Unauthenticated, "missing metadata")
 	}
-	// Use GetUserContents to get all contents for the user, then for each send its moderation result if available
-	// This is a simple polling approach.
+
+	authUserID := ""
+	if vals := md.Get("user-id"); len(vals) > 0 {
+		authUserID = vals[0]
+	}
+	if authUserID == "" {
+		return status.Error(codes.Unauthenticated, "user not authenticated")
+	}
+
+	targetUserID := req.UserId
+	if targetUserID == "" {
+		targetUserID = authUserID
+	} else if targetUserID != authUserID {
+		return status.Error(codes.PermissionDenied, "cannot view results of another user")
+	}
+
 	const pageSize = 50
 	offset := 0
 	for {
-		contents, err := s.svc.ListUserContents(stream.Context(), req.UserId, pageSize, offset)
+		contents, err := s.svc.ListUserContents(stream.Context(), targetUserID, pageSize, offset)
 		if err != nil {
 			return status.Errorf(codes.Internal, "listing contents: %v", err)
 		}
 		if len(contents) == 0 {
 			break
 		}
+
 		for _, c := range contents {
 			mod, err := s.modSvc.GetModerationResult(stream.Context(), c.ID)
 			if err != nil {
-				// Skip content without moderation result yet
 				continue
 			}
+
 			msg := &content.ModerationResult{
 				Id:         mod.ID,
 				ContentId:  mod.ContentID,
@@ -70,11 +99,12 @@ func (s *ContentServer) StreamModerationResults(req *content.StreamModerationRes
 				Categories: make([]string, len(mod.Categories)),
 				ModelName:  mod.ModelName,
 				DurationMs: mod.DurationMs,
-				CreatedAt:  nil, // conversion later if needed
+				CreatedAt:  nil,
 			}
 			for i, cat := range mod.Categories {
 				msg.Categories[i] = string(cat)
 			}
+
 			if err := stream.Send(msg); err != nil {
 				if errors.Is(err, io.EOF) {
 					return nil
@@ -82,7 +112,12 @@ func (s *ContentServer) StreamModerationResults(req *content.StreamModerationRes
 				return status.Errorf(codes.Internal, "sending result: %v", err)
 			}
 		}
+
+		if len(contents) < pageSize {
+			break
+		}
 		offset += pageSize
 	}
+
 	return nil
 }

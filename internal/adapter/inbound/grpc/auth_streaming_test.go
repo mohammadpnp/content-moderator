@@ -104,7 +104,7 @@ func TestAuthInterceptor_Unary(t *testing.T) {
 	resp, err := client.CreateContent(ctx, req)
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
-	assert.Equal(t, "user-auth-test", resp.Content.UserId) // user_id از درخواست اختیاری است
+	assert.Equal(t, "testuser", resp.Content.UserId)
 }
 
 func TestAuthInterceptor_Stream(t *testing.T) {

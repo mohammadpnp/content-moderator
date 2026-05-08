@@ -31,6 +31,12 @@ func (h *ContentHandler) Create(c *fiber.Ctx) error {
 		return errorResponse(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
+	userID, ok := c.Locals("userID").(string)
+	if !ok || userID == "" {
+		return errorResponse(c, fiber.StatusUnauthorized, "user not authenticated")
+	}
+	req.UserID = userID
+
 	if err := validate.Struct(req); err != nil {
 		return errorResponse(c, fiber.StatusBadRequest, formatValidationError(err))
 	}

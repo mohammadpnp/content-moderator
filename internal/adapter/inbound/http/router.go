@@ -3,6 +3,7 @@ package http
 import (
 	"github.com/gofiber/adaptor/v2"
 	"github.com/gofiber/fiber/v2"
+	"github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/inbound"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -11,6 +12,7 @@ func SetupRoutes(app *fiber.App, contentSvc inbound.ContentService) {
 	handler := NewContentHandler(contentSvc)
 
 	v1 := app.Group("/api/v1")
+	v1.Use(middleware.AuthMiddleware())
 	v1.Post("/contents", handler.Create)
 	v1.Get("/contents/:id", handler.Get)
 	v1.Delete("/contents/:id", handler.Delete)

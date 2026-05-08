@@ -68,6 +68,7 @@ func TestIntegrationCreateContent(t *testing.T) {
 		reqBody := `{"user_id":"user-integration","type":"text","body":"hello world"}`
 		req := httptest.NewRequest("POST", "/api/v1/contents", bytes.NewBufferString(reqBody))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer valid-user-integration")
 		resp, err := app.Test(req, -1)
 
 		require.NoError(t, err)
@@ -94,6 +95,8 @@ func TestIntegrationGetContent(t *testing.T) {
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("GET", "/api/v1/contents/"+contentID, nil)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer valid-user-integration")
 	resp, err := app.Test(req, -1)
 	require.NoError(t, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
@@ -116,6 +119,8 @@ func TestIntegrationListUserContents(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("GET", "/api/v1/users/user-list/contents?limit=10&offset=0", nil)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer valid-user-integration")
 	resp, err := app.Test(req, -1)
 	require.NoError(t, err)
 	if resp.StatusCode != fiber.StatusOK {
@@ -139,6 +144,8 @@ func TestIntegrationDeleteContent(t *testing.T) {
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/contents/"+c.ID, nil)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer valid-user-integration")
 	resp, err := app.Test(req, -1)
 	require.NoError(t, err)
 	assert.Equal(t, fiber.StatusNoContent, resp.StatusCode)

@@ -36,12 +36,10 @@ func (s *ModerationServiceImpl) ModerateContent(ctx context.Context, contentID s
 	if contentID == "" {
 		return nil, errors.New("content ID cannot be empty")
 	}
-
 	content, err := s.repo.FindByID(ctx, contentID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find content for moderation: %w", err)
 	}
-
 	if !content.IsPending() {
 		return nil, fmt.Errorf("content %s is already moderated (status: %s)", contentID, content.Status)
 	}
@@ -54,6 +52,12 @@ func (s *ModerationServiceImpl) ModerateContent(ctx context.Context, contentID s
 	if !acquired {
 		return nil, fmt.Errorf("content %s is already being processed", contentID)
 	}
+
+	defer func() {
+		if delErr := s.cacheStore.Invalidate(ctx, idempotencyKey); delErr != nil {
+			log.Printf("WARNING: failed to release idempotency lock for %s: %v", contentID, delErr)
+		}
+	}()
 
 	var result *entity.ModerationResult
 	startTime := time.Now()
