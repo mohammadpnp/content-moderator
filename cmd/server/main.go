@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,16 +25,16 @@ import (
 	"github.com/mohammadpnp/content-moderator/api/content"
 	"github.com/mohammadpnp/content-moderator/api/moderation"
 	grpcadapter "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/grpc"
-	"github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http"
+	httpadapter "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http"
 	custommiddleware "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
+	wsadapter "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/websocket"
 	natsadapter "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/nats"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
+	redisadapter "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/redis"
 	"github.com/mohammadpnp/content-moderator/internal/service"
 	"github.com/mohammadpnp/content-moderator/internal/worker"
 	"github.com/mohammadpnp/content-moderator/test/mock"
 
-	wsadapter "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/websocket"
-	redisadapter "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/redis"
 	"go.opentelemetry.io/otel"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
@@ -94,6 +96,14 @@ func main() {
 	}
 	defer natsBroker.Close()
 
+	// Redis client
+	redisClient, err := redisadapter.NewClient(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	defer redisClient.Close()
+	log.Println("Connected to Redis")
+
 	// Context کلی برنامه (برای انتشار سیگنال خاموشی)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -105,17 +115,12 @@ func main() {
 		}
 	}()
 
-	// Cache (فعلاً Mock)
-	cacheStore := mock.NewMockCacheStore()
+	// Cache (Redis)
+	cacheStore := redisadapter.NewCacheStore(redisClient)
 
 	// AI Client (فعلاً Mock)
 	aiClient := mock.NewMockAIClient()
 	// TODO: در آینده با TritonClient جایگزین شود
-	// if tritonHost := os.Getenv("TRITON_HOST"); tritonHost != "" {
-	// 	tc, err := tritonadapter.NewTritonClient(tritonHost + ":8001")
-	// 	if err != nil { log.Fatalf(...) }
-	// 	aiClient = tritonadapter.NewCircuitBreakerAIClient(tc)
-	// }
 
 	// Repository
 	contentRepo := postgres.NewContentRepository(db)
@@ -131,14 +136,6 @@ func main() {
 			log.Fatalf("Worker pool failed: %v", err)
 		}
 	}()
-
-	// ── Redis ────────────────────────────────────────────────
-	redisClient, err := redisadapter.NewClient(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
-	}
-	defer redisClient.Close()
-	log.Println("Connected to Redis")
 
 	// ── Realtime Broadcaster (Redis Pub/Sub) ─────────────────
 	broadcaster := redisadapter.NewPubSubAdapter(redisClient)
@@ -178,7 +175,7 @@ func main() {
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
 	}))
 
-	http.SetupRoutes(app, contentSvc)
+	httpadapter.SetupRoutes(app, contentSvc)
 	app.Get("/ws", wsadapter.NewWSHandler(hub))
 
 	go func() {
@@ -226,6 +223,19 @@ func main() {
 		log.Printf("Starting gRPC server on :%s", grpcPort)
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Fatalf("gRPC server failed: %v", err)
+		}
+	}()
+
+	// ── pprof server ─────────────────────────────────────────────
+	pprofPort := os.Getenv("PPROF_PORT")
+	if pprofPort == "" {
+		pprofPort = "6060"
+	}
+	go func() {
+		log.Printf("pprof server listening on :%s", pprofPort)
+		// pprof handlers روی DefaultServeMux ثبت شدن (با blank import)
+		if err := http.ListenAndServe(":"+pprofPort, nil); err != nil {
+			log.Printf("pprof server error: %v", err)
 		}
 	}()
 
