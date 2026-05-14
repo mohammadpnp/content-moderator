@@ -11,6 +11,9 @@ import (
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
 	"github.com/nats-io/nats.go"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -23,8 +26,24 @@ const (
 	connectTimeout = 10 * time.Second
 
 	subjectModerationJobDLQ = "moderation.job.dlq"
-	advisoryMaxDeliver      = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.MODERATION_JOBS.moderation-job-consumer"
 )
+
+// natsHeaderCarrier implements propagation.TextMapCarrier for nats.Header
+type natsHeaderCarrier nats.Header
+
+func (c natsHeaderCarrier) Get(key string) string {
+	return nats.Header(c).Get(key)
+}
+func (c natsHeaderCarrier) Set(key, val string) {
+	nats.Header(c).Set(key, val)
+}
+func (c natsHeaderCarrier) Keys() []string {
+	keys := make([]string, 0, len(nats.Header(c)))
+	for k := range nats.Header(c) {
+		keys = append(keys, k)
+	}
+	return keys
+}
 
 type NATSBroker struct {
 	conn *nats.Conn
@@ -147,15 +166,26 @@ func ensureConsumer(js nats.JetStreamContext) error {
 }
 
 func (b *NATSBroker) PublishModerationJob(ctx context.Context, content *entity.Content) error {
+	tr := otel.Tracer("nats")
+	ctx, span := tr.Start(ctx, "NATSBroker.PublishModerationJob", trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+	span.SetAttributes(attribute.String("content.id", content.ID))
+
 	data, err := json.Marshal(content)
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("failed to marshal content: %w", err)
 	}
 	msg := nats.NewMsg(subjectModerationJob)
 	msg.Data = data
 	msg.Header.Set("Content-Type", "application/json")
+
+	carrier := natsHeaderCarrier(msg.Header)
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+
 	_, err = b.js.PublishMsg(msg, nats.Context(ctx))
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("failed to publish moderation job: %w", err)
 	}
 	log.Debug().Str("content_id", content.ID).Msg("published moderation job")
@@ -163,15 +193,26 @@ func (b *NATSBroker) PublishModerationJob(ctx context.Context, content *entity.C
 }
 
 func (b *NATSBroker) PublishModerationResult(ctx context.Context, result *entity.ModerationResult) error {
+	tr := otel.Tracer("nats")
+	ctx, span := tr.Start(ctx, "NATSBroker.PublishModerationResult", trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+	span.SetAttributes(attribute.String("content.id", result.ContentID))
+
 	data, err := json.Marshal(result)
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("failed to marshal moderation result: %w", err)
 	}
 	msg := nats.NewMsg(subjectModerationResult)
 	msg.Data = data
 	msg.Header.Set("Content-Type", "application/json")
+
+	carrier := natsHeaderCarrier(msg.Header)
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+
 	_, err = b.js.PublishMsg(msg, nats.Context(ctx))
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("failed to publish moderation result: %w", err)
 	}
 	log.Debug().Str("content_id", result.ContentID).Bool("approved", result.IsApproved).Msg("published moderation result")
@@ -179,15 +220,26 @@ func (b *NATSBroker) PublishModerationResult(ctx context.Context, result *entity
 }
 
 func (b *NATSBroker) PublishNotification(ctx context.Context, notification *entity.Notification) error {
+	tr := otel.Tracer("nats")
+	ctx, span := tr.Start(ctx, "NATSBroker.PublishNotification", trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+	span.SetAttributes(attribute.String("user_id", notification.UserID), attribute.String("content_id", notification.ContentID))
+
 	data, err := json.Marshal(notification)
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("failed to marshal notification: %w", err)
 	}
 	msg := nats.NewMsg(subjectNotification)
 	msg.Data = data
 	msg.Header.Set("Content-Type", "application/json")
+
+	carrier := natsHeaderCarrier(msg.Header)
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+
 	_, err = b.js.PublishMsg(msg, nats.Context(ctx))
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("failed to publish notification: %w", err)
 	}
 	log.Debug().Str("user_id", notification.UserID).Str("content_id", notification.ContentID).Msg("published notification")
@@ -199,14 +251,25 @@ func (b *NATSBroker) SubscribeModerationJobs(ctx context.Context, handler func(c
 		subjectModerationJob,
 		"moderation-workers",
 		func(msg *nats.Msg) {
+			// Extract trace context from headers
+			carrier := natsHeaderCarrier(msg.Header)
+			ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+			tr := otel.Tracer("nats")
+			ctx, span := tr.Start(ctx, "NATSBroker.SubscribeModerationJobs", trace.WithSpanKind(trace.SpanKindConsumer))
+			defer span.End()
+
 			var content entity.Content
 			if err := json.Unmarshal(msg.Data, &content); err != nil {
 				log.Warn().Err(err).Msg("unmarshal job content")
+				span.RecordError(err)
 				msg.Nak()
 				return
 			}
+			span.SetAttributes(attribute.String("content.id", content.ID))
+
 			if err := handler(&content); err != nil {
 				log.Error().Err(err).Str("content_id", content.ID).Msg("processing job")
+				span.RecordError(err)
 				msg.Nak()
 				return
 			}
@@ -228,13 +291,23 @@ func (b *NATSBroker) SubscribeModerationJobs(ctx context.Context, handler func(c
 
 func (b *NATSBroker) SubscribeModerationResults(ctx context.Context, handler func(result *entity.ModerationResult) error) error {
 	sub, err := b.js.Subscribe(subjectModerationResult, func(msg *nats.Msg) {
+		carrier := natsHeaderCarrier(msg.Header)
+		ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+		tr := otel.Tracer("nats")
+		ctx, span := tr.Start(ctx, "NATSBroker.SubscribeModerationResults", trace.WithSpanKind(trace.SpanKindConsumer))
+		defer span.End()
+
 		var result entity.ModerationResult
 		if err := json.Unmarshal(msg.Data, &result); err != nil {
 			log.Warn().Err(err).Msg("unmarshal moderation result")
+			span.RecordError(err)
 			return
 		}
+		span.SetAttributes(attribute.String("content.id", result.ContentID))
+
 		if err := handler(&result); err != nil {
 			log.Error().Err(err).Str("content_id", result.ContentID).Msg("handling moderation result")
+			span.RecordError(err)
 		}
 		msg.Ack()
 	}, nats.ManualAck(), nats.Durable("moderation-result-consumer"))
@@ -251,14 +324,24 @@ func (b *NATSBroker) SubscribeModerationResults(ctx context.Context, handler fun
 
 func (b *NATSBroker) SubscribeNotifications(ctx context.Context, handler func(notification *entity.Notification) error) error {
 	sub, err := b.js.Subscribe(subjectNotification, func(msg *nats.Msg) {
+		carrier := natsHeaderCarrier(msg.Header)
+		ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+		tr := otel.Tracer("nats")
+		ctx, span := tr.Start(ctx, "NATSBroker.SubscribeNotifications", trace.WithSpanKind(trace.SpanKindConsumer))
+		defer span.End()
+
 		var notif entity.Notification
 		if err := json.Unmarshal(msg.Data, &notif); err != nil {
 			log.Warn().Err(err).Msg("unmarshal notification")
+			span.RecordError(err)
 			msg.Nak()
 			return
 		}
+		span.SetAttributes(attribute.String("user_id", notif.UserID), attribute.String("content_id", notif.ContentID))
+
 		if err := handler(&notif); err != nil {
 			log.Error().Err(err).Str("user_id", notif.UserID).Msg("handling notification")
+			span.RecordError(err)
 			msg.Nak()
 			return
 		}
@@ -276,7 +359,8 @@ func (b *NATSBroker) SubscribeNotifications(ctx context.Context, handler func(no
 }
 
 func (b *NATSBroker) StartDLQMonitor(ctx context.Context) error {
-	sub, err := b.js.Subscribe(advisoryMaxDeliver, func(msg *nats.Msg) {
+	advisorySubject := "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.MODERATION_JOBS.moderation-job-consumer"
+	sub, err := b.js.Subscribe(advisorySubject, func(msg *nats.Msg) {
 		var advisory struct {
 			Stream string `json:"stream"`
 			Seq    uint64 `json:"stream_seq"`

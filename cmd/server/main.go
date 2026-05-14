@@ -37,9 +37,11 @@ import (
 	"github.com/mohammadpnp/content-moderator/test/mock"
 
 	"go.opentelemetry.io/otel"
-	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 )
 
 func main() {
@@ -174,6 +176,7 @@ func main() {
 	app.Use(recover.New())
 	app.Use(custommw.TimeoutMiddleware(30 * time.Second))
 	app.Use(custommw.StructuredLoggerMiddleware())
+	app.Use(custommw.TracingMiddleware())
 	app.Use(custommw.PrometheusMiddleware())
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
@@ -263,13 +266,33 @@ func main() {
 }
 
 func initTracer() (*sdktrace.TracerProvider, error) {
-	exporter, err := stdout.New(stdout.WithPrettyPrint())
-	if err != nil {
-		return nil, err
+	jaegerAddr := os.Getenv("JAEGER_ENDPOINT")
+	if jaegerAddr == "" {
+		jaegerAddr = "jaeger:4317"
 	}
+	exporter, err := otlptracegrpc.New(
+		context.Background(),
+		otlptracegrpc.WithEndpoint(jaegerAddr),
+		otlptracegrpc.WithInsecure(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OTLP trace exporter: %w", err)
+	}
+
+	res, err := resource.New(context.Background(),
+		resource.WithAttributes(
+			semconv.ServiceName("content-moderator"),
+			semconv.ServiceVersion("1.0.0"),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource: %w", err)
+	}
+
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
