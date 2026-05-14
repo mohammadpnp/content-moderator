@@ -8,6 +8,7 @@ import (
 	"github.com/mohammadpnp/content-moderator/internal/domain/entity"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/inbound"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
+	"github.com/mohammadpnp/content-moderator/internal/pkg/metrics"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
 )
@@ -55,6 +56,19 @@ func (p *Pool) Start(ctx context.Context) error {
 		p.wg.Add(1)
 		go p.worker(ctx, i, limiter, jobCh)
 	}
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				metrics.JobQueueLength.Set(float64(len(jobCh)))
+			}
+		}
+	}()
 
 	err := p.broker.SubscribeModerationJobs(ctx, func(content *entity.Content) error {
 		select {

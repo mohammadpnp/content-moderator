@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mohammadpnp/content-moderator/internal/domain/entity"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
+	"github.com/mohammadpnp/content-moderator/internal/pkg/metrics"
 	"github.com/rs/zerolog/log"
 )
 
@@ -37,6 +38,8 @@ func (s *ContentServiceImpl) CreateContent(ctx context.Context, userID string, c
 	if err := s.repo.Save(ctx, content); err != nil {
 		return nil, fmt.Errorf("failed to save content: %w", err)
 	}
+
+	metrics.ContentsCreatedTotal.WithLabelValues(string(contentType), string(content.Status)).Inc()
 
 	if s.messageBroker != nil {
 		if err := s.messageBroker.PublishModerationJob(ctx, content); err != nil {

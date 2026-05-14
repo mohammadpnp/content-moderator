@@ -8,6 +8,7 @@ import (
 
 	"github.com/gofiber/websocket/v2"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
+	"github.com/mohammadpnp/content-moderator/internal/pkg/metrics"
 	"github.com/rs/zerolog/log"
 )
 
@@ -112,6 +113,7 @@ func (h *Hub) Run() error {
 		select {
 		case client := <-h.register:
 			h.mu.Lock()
+			metrics.ActiveWsConnections.Inc()
 			if _, ok := h.clients[client.userID]; !ok {
 				h.clients[client.userID] = make(map[*Client]bool)
 			}
@@ -121,6 +123,7 @@ func (h *Hub) Run() error {
 
 		case client := <-h.unregister:
 			h.mu.Lock()
+			metrics.ActiveWsConnections.Dec()
 			if clients, ok := h.clients[client.userID]; ok {
 				if _, ok := clients[client]; ok {
 					delete(clients, client)

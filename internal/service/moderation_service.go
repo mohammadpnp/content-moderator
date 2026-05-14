@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/mohammadpnp/content-moderator/internal/domain/entity"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
+	"github.com/mohammadpnp/content-moderator/internal/pkg/metrics"
 	"github.com/rs/zerolog/log"
 )
 
@@ -73,6 +75,11 @@ func (s *ModerationServiceImpl) ModerateContent(ctx context.Context, contentID s
 
 	if err != nil {
 		return nil, fmt.Errorf("AI moderation failed: %w", err)
+	}
+
+	if result != nil {
+		metrics.ModerationDuration.WithLabelValues(result.ModelName).Observe(float64(result.DurationMs) / 1000.0)
+		metrics.ModerationResultsTotal.WithLabelValues(strconv.FormatBool(result.IsApproved), result.ModelName).Inc()
 	}
 
 	result.ContentID = contentID

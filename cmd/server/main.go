@@ -174,6 +174,7 @@ func main() {
 	app.Use(recover.New())
 	app.Use(custommw.TimeoutMiddleware(30 * time.Second))
 	app.Use(custommw.StructuredLoggerMiddleware())
+	app.Use(custommw.PrometheusMiddleware())
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
