@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/mohammadpnp/content-moderator/internal/domain/entity"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
+	"github.com/rs/zerolog/log"
 )
 
 type ModerationServiceImpl struct {
@@ -55,7 +55,7 @@ func (s *ModerationServiceImpl) ModerateContent(ctx context.Context, contentID s
 
 	defer func() {
 		if delErr := s.cacheStore.Invalidate(ctx, idempotencyKey); delErr != nil {
-			log.Printf("WARNING: failed to release idempotency lock for %s: %v", contentID, delErr)
+			log.Warn().Err(delErr).Str("content_id", contentID).Msg("failed to release idempotency lock")
 		}
 	}()
 
@@ -75,19 +75,16 @@ func (s *ModerationServiceImpl) ModerateContent(ctx context.Context, contentID s
 		return nil, fmt.Errorf("AI moderation failed: %w", err)
 	}
 
-	// Set metadata
 	result.ContentID = contentID
 	result.DurationMs = time.Since(startTime).Milliseconds()
 
-	// Cache the result
 	cacheTTL := 1 * time.Hour
 	if cacheErr := s.cacheStore.SetModerationResult(ctx, contentID, result, cacheTTL); cacheErr != nil {
-		log.Printf("WARNING: failed to cache moderation result for content %s: %v", contentID, cacheErr)
+		log.Warn().Err(cacheErr).Str("content_id", contentID).Msg("failed to cache moderation result")
 	}
 
-	// Publish result to NATS for async processing
 	if pubErr := s.messageBroker.PublishModerationResult(ctx, result); pubErr != nil {
-		log.Printf("WARNING: failed to publish moderation result to NATS: %v", pubErr)
+		log.Warn().Err(pubErr).Str("content_id", contentID).Msg("failed to publish moderation result to NATS")
 	}
 
 	return result, nil
@@ -97,7 +94,6 @@ func (s *ModerationServiceImpl) HandleModerationResult(ctx context.Context, resu
 	if result == nil {
 		return errors.New("moderation result cannot be nil")
 	}
-
 	if result.ContentID == "" {
 		return errors.New("moderation result content ID cannot be empty")
 	}
@@ -136,7 +132,7 @@ func (s *ModerationServiceImpl) HandleModerationResult(ctx context.Context, resu
 	}
 
 	if err := s.messageBroker.PublishNotification(ctx, notification); err != nil {
-		log.Printf("WARNING: failed to publish notification for content %s: %v", result.ContentID, err)
+		log.Warn().Err(err).Str("content_id", result.ContentID).Str("user_id", content.UserID).Msg("failed to publish notification")
 	}
 
 	return nil
@@ -149,7 +145,7 @@ func (s *ModerationServiceImpl) GetModerationResult(ctx context.Context, content
 
 	result, err := s.cacheStore.GetModerationResult(ctx, contentID)
 	if err == nil && result != nil {
-		log.Printf("Cache hit for moderation result: %s", contentID)
+		log.Debug().Str("content_id", contentID).Msg("cache hit for moderation result")
 		return result, nil
 	}
 

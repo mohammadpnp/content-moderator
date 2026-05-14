@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/mohammadpnp/content-moderator/internal/domain/entity"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
+	"github.com/rs/zerolog/log"
 )
 
 type ContentServiceImpl struct {
@@ -40,10 +40,11 @@ func (s *ContentServiceImpl) CreateContent(ctx context.Context, userID string, c
 
 	if s.messageBroker != nil {
 		if err := s.messageBroker.PublishModerationJob(ctx, content); err != nil {
-			log.Printf("WARNING: failed to publish moderation job for content %s: %v", content.ID, err)
+			log.Warn().Err(err).Str("content_id", content.ID).Msg("failed to publish moderation job")
 		}
 	}
 
+	log.Debug().Str("content_id", content.ID).Str("user_id", userID).Msg("content created")
 	return content, nil
 }
 
@@ -65,7 +66,6 @@ func (s *ContentServiceImpl) ListUserContents(ctx context.Context, userID string
 		return nil, errors.New("user ID cannot be empty")
 	}
 
-	// Set default pagination values
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}

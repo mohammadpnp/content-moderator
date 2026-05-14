@@ -2,13 +2,13 @@ package worker
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/mohammadpnp/content-moderator/internal/domain/entity"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/inbound"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
 )
 
@@ -22,7 +22,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		WorkerCount: 20,
-		RateLimit:   5, // per worker per second
+		RateLimit:   5,
 		RateBurst:   2,
 		JobTimeout:  30 * time.Second,
 	}
@@ -48,18 +48,14 @@ func (p *Pool) Start(ctx context.Context) error {
 	ctx, p.cancel = context.WithCancel(ctx)
 	defer p.cancel()
 
-	// Create rate limiters
 	limiter := rate.NewLimiter(rate.Limit(p.config.RateLimit), p.config.RateBurst)
-
 	jobCh := make(chan *entity.Content, 1000)
 
-	// Launch workers
 	for i := 0; i < p.config.WorkerCount; i++ {
 		p.wg.Add(1)
 		go p.worker(ctx, i, limiter, jobCh)
 	}
 
-	// Subscribe to jobs and feed channel
 	err := p.broker.SubscribeModerationJobs(ctx, func(content *entity.Content) error {
 		select {
 		case jobCh <- content:
@@ -72,23 +68,21 @@ func (p *Pool) Start(ctx context.Context) error {
 		return err
 	}
 
-	// Wait for shutdown
 	<-ctx.Done()
-
-	log.Println("Shutting down worker pool...")
+	log.Info().Msg("Shutting down worker pool...")
 	close(jobCh)
 	p.wg.Wait()
-	log.Println("All workers exited")
+	log.Info().Msg("All workers exited")
 	return nil
 }
 
 func (p *Pool) worker(ctx context.Context, id int, limiter *rate.Limiter, jobs <-chan *entity.Content) {
 	defer p.wg.Done()
-	log.Printf("Worker %d started", id)
+	log.Debug().Int("worker_id", id).Msg("worker started")
 
 	for content := range jobs {
 		if err := limiter.Wait(ctx); err != nil {
-			log.Printf("Worker %d rate limit wait cancelled", id)
+			log.Debug().Int("worker_id", id).Err(err).Msg("rate limit wait cancelled")
 			return
 		}
 
@@ -96,21 +90,19 @@ func (p *Pool) worker(ctx context.Context, id int, limiter *rate.Limiter, jobs <
 		p.processJob(jobCtx, content)
 		jobCancel()
 	}
-	log.Printf("Worker %d stopped", id)
+	log.Debug().Int("worker_id", id).Msg("worker stopped")
 }
 
 func (p *Pool) processJob(ctx context.Context, content *entity.Content) {
-	log.Printf("Worker processing content: %s (type: %s)", content.ID, content.Type)
+	log.Debug().Str("content_id", content.ID).Str("type", string(content.Type)).Msg("worker processing content")
 
-	// Moderate the content (this will call AI, cache, and publish result)
 	result, err := p.modSvc.ModerateContent(ctx, content.ID)
 	if err != nil {
-		log.Printf("ERROR moderating content %s: %v", content.ID, err)
+		log.Error().Err(err).Str("content_id", content.ID).Msg("ERROR moderating content")
 		return
 	}
 
-	// Handle the result (update DB status, publish notification)
 	if err := p.modSvc.HandleModerationResult(ctx, result); err != nil {
-		log.Printf("ERROR handling moderation result for %s: %v", content.ID, err)
+		log.Error().Err(err).Str("content_id", content.ID).Msg("ERROR handling moderation result")
 	}
 }

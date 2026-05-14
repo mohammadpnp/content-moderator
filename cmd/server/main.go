@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -15,10 +14,11 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/logger"
+	fiberlogger "github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/joho/godotenv"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -26,11 +26,12 @@ import (
 	"github.com/mohammadpnp/content-moderator/api/moderation"
 	grpcadapter "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/grpc"
 	httpadapter "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http"
-	custommiddleware "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
+	custommw "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/http/middleware"
 	wsadapter "github.com/mohammadpnp/content-moderator/internal/adapter/inbound/websocket"
 	natsadapter "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/nats"
 	"github.com/mohammadpnp/content-moderator/internal/adapter/outbound/postgres"
 	redisadapter "github.com/mohammadpnp/content-moderator/internal/adapter/outbound/redis"
+	"github.com/mohammadpnp/content-moderator/internal/pkg/logger"
 	"github.com/mohammadpnp/content-moderator/internal/service"
 	"github.com/mohammadpnp/content-moderator/internal/worker"
 	"github.com/mohammadpnp/content-moderator/test/mock"
@@ -42,26 +43,35 @@ import (
 )
 
 func main() {
-	// ── ۱. بارگذاری تنظیمات ──────────────────────────────────────
+	// Load .env
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using system environment variables")
+		log.Warn().Msg("No .env file found, using system environment variables")
 	}
 
-	// ── ۲. راه‌اندازی Tracer ─────────────────────────────────────
-	tracerProvider, err := initTracer()
+	// Environment
+	env := os.Getenv("ENVIRONMENT")
+	if env == "" {
+		env = "development"
+	}
+
+	// Initialize zerolog
+	logger.Init(env)
+
+	// Initialize tracer
+	tp, err := initTracer()
 	if err != nil {
-		log.Fatalf("Failed to initialize tracer: %v", err)
+		log.Fatal().Err(err).Msg("Failed to initialize tracer")
 	}
 	defer func() {
-		if err := tracerProvider.Shutdown(context.Background()); err != nil {
-			log.Printf("Tracer shutdown error: %v", err)
+		if err := tp.Shutdown(context.Background()); err != nil {
+			log.Error().Err(err).Msg("Tracer shutdown error")
 		}
 	}()
 
-	// ── ۳. اتصال به PostgreSQL و اجرای Migration ─────────────────
+	// Database
 	db, err := postgres.NewDB()
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatal().Err(err).Msg("Failed to connect to database")
 	}
 	defer db.Close()
 
@@ -69,7 +79,7 @@ func main() {
 	if migrationDir == "" {
 		projectRoot, err := postgres.FindProjectRoot()
 		if err != nil {
-			log.Fatalf("Cannot find project root: %v", err)
+			log.Fatal().Err(err).Msg("Cannot find project root")
 		}
 		migrationDir = filepath.Join(projectRoot, "deploy", "migrations")
 	}
@@ -84,80 +94,73 @@ func main() {
 	)
 
 	if err := postgres.RunMigrations(migrationDir, dsn); err != nil {
-		log.Fatalf("Migration error: %v", err)
+		log.Fatal().Err(err).Msg("Migration error")
 	}
-	log.Println("Connected to PostgreSQL")
+	log.Info().Msg("Connected to PostgreSQL")
 
-	// ── ۴. راه‌اندازی سرویس‌های زیرساختی ─────────────────────────
 	// NATS
 	natsBroker, err := natsadapter.NewNATSBroker()
 	if err != nil {
-		log.Fatalf("Failed to connect to NATS: %v", err)
+		log.Fatal().Err(err).Msg("Failed to connect to NATS")
 	}
 	defer natsBroker.Close()
 
-	// Redis client
+	// Redis
 	redisClient, err := redisadapter.NewClient(context.Background())
 	if err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		log.Fatal().Err(err).Msg("Failed to connect to Redis")
 	}
 	defer redisClient.Close()
-	log.Println("Connected to Redis")
+	log.Info().Msg("Connected to Redis")
 
-	// Context کلی برنامه (برای انتشار سیگنال خاموشی)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// مانیتورینگ Dead Letter Queue
+	// DLQ monitor
 	go func() {
 		if err := natsBroker.StartDLQMonitor(ctx); err != nil {
-			log.Printf("Warning: DLQ Monitor failed to start: %v", err)
+			log.Warn().Err(err).Msg("DLQ Monitor failed to start")
 		}
 	}()
 
-	// Cache (Redis)
 	cacheStore := redisadapter.NewCacheStore(redisClient)
 
-	// AI Client (فعلاً Mock)
+	// AI Client (mock for now)
 	aiClient := mock.NewMockAIClient()
-	// TODO: در آینده با TritonClient جایگزین شود
 
-	// Repository
 	contentRepo := postgres.NewContentRepository(db)
 
-	// ── ۵. سرویس‌های دامنه ───────────────────────────────────────
+	// Services
 	contentSvc := service.NewContentService(contentRepo, natsBroker)
 	moderationSvc := service.NewModerationService(contentRepo, aiClient, cacheStore, natsBroker)
 
-	// ── ۶. راه‌اندازی Worker Pool ────────────────────────────────
+	// Worker pool
 	pool := worker.NewPool(worker.DefaultConfig(), moderationSvc, natsBroker)
 	go func() {
 		if err := pool.Start(ctx); err != nil {
-			log.Fatalf("Worker pool failed: %v", err)
+			log.Fatal().Err(err).Msg("Worker pool failed")
 		}
 	}()
 
-	// ── Realtime Broadcaster (Redis Pub/Sub) ─────────────────
+	// WebSocket
 	broadcaster := redisadapter.NewPubSubAdapter(redisClient)
-
-	// ── WebSocket Hub ────────────────────────────────────────
 	hub := wsadapter.NewHub(broadcaster)
 	go func() {
 		if err := hub.Run(); err != nil {
-			log.Fatalf("WebSocket Hub failed: %v", err)
+			log.Fatal().Err(err).Msg("WebSocket Hub failed")
 		}
 	}()
 	defer hub.Shutdown()
 
-	// ── Notification Bridge ─────────────────────────────────
+	// Notification bridge
 	notifBridge := service.NewNotificationBridge(natsBroker, broadcaster)
 	go func() {
 		if err := notifBridge.Start(ctx); err != nil {
-			log.Fatalf("Notification Bridge failed: %v", err)
+			log.Fatal().Err(err).Msg("Notification Bridge failed")
 		}
 	}()
 
-	// ── ۷. راه‌اندازی HTTP Server (Fiber) ────────────────────────
+	// HTTP server (Fiber)
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -165,11 +168,12 @@ func main() {
 	})
 
 	app.Use(requestid.New())
-	app.Use(logger.New(logger.Config{
+	app.Use(fiberlogger.New(fiberlogger.Config{
 		Format: "${pid} ${locals:requestid} ${status} - ${method} ${path} ${latency}\n",
 	}))
 	app.Use(recover.New())
-	app.Use(custommiddleware.TimeoutMiddleware(30 * time.Second))
+	app.Use(custommw.TimeoutMiddleware(30 * time.Second))
+	app.Use(custommw.StructuredLoggerMiddleware())
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
@@ -183,13 +187,13 @@ func main() {
 		if port == "" {
 			port = "8080"
 		}
-		log.Printf("Starting HTTP server on :%s", port)
+		log.Info().Str("port", port).Msg("Starting HTTP server")
 		if err := app.Listen(":" + port); err != nil {
-			log.Fatalf("HTTP server failed: %v", err)
+			log.Fatal().Err(err).Msg("HTTP server failed")
 		}
 	}()
 
-	// ── ۸. راه‌اندازی gRPC Server ────────────────────────────────
+	// gRPC server
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			grpcadapter.RecoveryUnaryInterceptor(),
@@ -218,49 +222,45 @@ func main() {
 		}
 		lis, err := net.Listen("tcp", ":"+grpcPort)
 		if err != nil {
-			log.Fatalf("Failed to listen on gRPC port: %v", err)
+			log.Fatal().Err(err).Msg("Failed to listen on gRPC port")
 		}
-		log.Printf("Starting gRPC server on :%s", grpcPort)
+		log.Info().Str("port", grpcPort).Msg("Starting gRPC server")
 		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("gRPC server failed: %v", err)
+			log.Fatal().Err(err).Msg("gRPC server failed")
 		}
 	}()
 
-	// ── pprof server ─────────────────────────────────────────────
+	// pprof
 	pprofPort := os.Getenv("PPROF_PORT")
 	if pprofPort == "" {
 		pprofPort = "6060"
 	}
 	go func() {
-		log.Printf("pprof server listening on :%s", pprofPort)
-		// pprof handlers روی DefaultServeMux ثبت شدن (با blank import)
+		log.Info().Str("port", pprofPort).Msg("pprof server listening")
 		if err := http.ListenAndServe(":"+pprofPort, nil); err != nil {
-			log.Printf("pprof server error: %v", err)
+			log.Error().Err(err).Msg("pprof server error")
 		}
 	}()
 
-	// ── ۹. Graceful Shutdown ─────────────────────────────────────
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
-	log.Printf("Received signal %v, shutting down...", sig)
+	log.Info().Str("signal", sig.String()).Msg("Received signal, shutting down...")
 
-	cancel() // اعلام توقف به Worker Pool و DLQ Monitor
+	cancel()
 
-	// توقف HTTP با مهلت
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
-		log.Printf("HTTP forced shutdown: %v", err)
+		log.Error().Err(err).Msg("HTTP forced shutdown")
 	}
 
-	// توقف gRPC
 	grpcServer.GracefulStop()
 
-	log.Println("All services stopped")
+	log.Info().Msg("All services stopped")
 }
 
-// ── تابع راه‌انداز Tracer ────────────────────────────────────────
 func initTracer() (*sdktrace.TracerProvider, error) {
 	exporter, err := stdout.New(stdout.WithPrettyPrint())
 	if err != nil {

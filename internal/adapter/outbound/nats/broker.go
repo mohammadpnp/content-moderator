@@ -4,41 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
 	"github.com/mohammadpnp/content-moderator/internal/domain/entity"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
 	"github.com/nats-io/nats.go"
+	"github.com/rs/zerolog/log"
 )
 
 const (
-	// Subject names
 	subjectModerationJob    = "moderation.job"
 	subjectModerationResult = "moderation.result"
 	subjectNotification     = "notification.send"
 
-	// Connection settings
 	maxReconnects  = 10
 	reconnectWait  = 2 * time.Second
 	connectTimeout = 10 * time.Second
-	publishTimeout = 5 * time.Second
 
-	// DLQ
 	subjectModerationJobDLQ = "moderation.job.dlq"
-
-	// Advisory subject for max deliveries
-	advisoryMaxDeliver = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.MODERATION_JOBS.moderation-job-consumer"
+	advisoryMaxDeliver      = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.MODERATION_JOBS.moderation-job-consumer"
 )
 
-// NATSBroker implements outbound.MessageBroker using NATS.
 type NATSBroker struct {
 	conn *nats.Conn
 	js   nats.JetStreamContext
 }
 
-// NewNATSBroker creates a new NATS broker connection.
 func NewNATSBroker() (*NATSBroker, error) {
 	host := os.Getenv("NATS_HOST")
 	if host == "" {
@@ -57,13 +49,13 @@ func NewNATSBroker() (*NATSBroker, error) {
 		nats.ReconnectWait(reconnectWait),
 		nats.Timeout(connectTimeout),
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
-			log.Printf("NATS disconnected: %v", err)
+			log.Warn().Err(err).Msg("NATS disconnected")
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
-			log.Printf("NATS reconnected to %s", nc.ConnectedUrl())
+			log.Info().Str("url", nc.ConnectedUrl()).Msg("NATS reconnected")
 		}),
 		nats.ErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
-			log.Printf("NATS error: %v", err)
+			log.Error().Err(err).Msg("NATS error")
 		}),
 	}
 
@@ -78,22 +70,19 @@ func NewNATSBroker() (*NATSBroker, error) {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	// Ensure streams exist
 	if err := ensureStreams(js); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to ensure streams: %w", err)
 	}
-
 	if err := ensureConsumer(js); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to ensure consumer: %w", err)
 	}
 
-	log.Printf("Connected to NATS at %s", url)
+	log.Info().Str("url", url).Msg("Connected to NATS")
 	return &NATSBroker{conn: conn, js: js}, nil
 }
 
-// ensureStreams creates necessary JetStream streams if they don't exist.
 func ensureStreams(js nats.JetStreamContext) error {
 	streams := []*nats.StreamConfig{
 		{
@@ -114,11 +103,10 @@ func ensureStreams(js nats.JetStreamContext) error {
 			MaxAge:   7 * 24 * time.Hour,
 			Storage:  nats.FileStorage,
 		},
-		// DLQ Stream
 		{
 			Name:     "MODERATION_DLQ",
 			Subjects: []string{subjectModerationJobDLQ},
-			MaxAge:   30 * 24 * time.Hour, // keep DLQ messages for 30 days
+			MaxAge:   30 * 24 * time.Hour,
 			Storage:  nats.FileStorage,
 		},
 	}
@@ -136,104 +124,128 @@ func ensureStreams(js nats.JetStreamContext) error {
 	return nil
 }
 
-// PublishModerationJob publishes a content moderation job.
+func ensureConsumer(js nats.JetStreamContext) error {
+	consumerCfg := &nats.ConsumerConfig{
+		Durable:       "moderation-job-consumer",
+		DeliverGroup:  "moderation-workers",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxDeliver:    3,
+		MaxAckPending: 100,
+		BackOff:       []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond},
+	}
+	_, err := js.AddConsumer("MODERATION_JOBS", consumerCfg)
+	if err != nil && err != nats.ErrConsumerNameAlreadyInUse {
+		return fmt.Errorf("failed to add consumer: %w", err)
+	}
+	if err == nats.ErrConsumerNameAlreadyInUse {
+		_, err = js.UpdateConsumer("MODERATION_JOBS", consumerCfg)
+		if err != nil {
+			return fmt.Errorf("failed to update consumer: %w", err)
+		}
+	}
+	return nil
+}
+
 func (b *NATSBroker) PublishModerationJob(ctx context.Context, content *entity.Content) error {
 	data, err := json.Marshal(content)
 	if err != nil {
 		return fmt.Errorf("failed to marshal content: %w", err)
 	}
-
 	msg := nats.NewMsg(subjectModerationJob)
 	msg.Data = data
 	msg.Header.Set("Content-Type", "application/json")
-
-	// Use JetStream for persistence
 	_, err = b.js.PublishMsg(msg, nats.Context(ctx))
 	if err != nil {
 		return fmt.Errorf("failed to publish moderation job: %w", err)
 	}
-
-	log.Printf("Published moderation job for content: %s", content.ID)
+	log.Debug().Str("content_id", content.ID).Msg("published moderation job")
 	return nil
 }
 
-// SubscribeModerationResults subscribes to moderation results.
-func (b *NATSBroker) SubscribeModerationResults(ctx context.Context, handler func(result *entity.ModerationResult) error) error {
-	sub, err := b.js.Subscribe(subjectModerationResult, func(msg *nats.Msg) {
-		var result entity.ModerationResult
-		if err := json.Unmarshal(msg.Data, &result); err != nil {
-			log.Printf("WARNING: failed to unmarshal moderation result: %v", err)
-			return
-		}
-
-		if err := handler(&result); err != nil {
-			log.Printf("ERROR handling moderation result: %v", err)
-		}
-
-		msg.Ack()
-	}, nats.ManualAck(), nats.Durable("moderation-result-consumer"))
-	if err != nil {
-		return fmt.Errorf("failed to subscribe to moderation results: %w", err)
-	}
-
-	// Clean up subscription when context is done
-	go func() {
-		<-ctx.Done()
-		sub.Unsubscribe()
-		log.Println("Moderation results subscription closed")
-	}()
-
-	log.Println("Subscribed to moderation results")
-	return nil
-}
-
-// PublishNotification publishes a notification to NATS.
-func (b *NATSBroker) PublishNotification(ctx context.Context, notification *entity.Notification) error {
-	data, err := json.Marshal(notification)
-	if err != nil {
-		return fmt.Errorf("failed to marshal notification: %w", err)
-	}
-
-	msg := nats.NewMsg(subjectNotification)
-	msg.Data = data
-	msg.Header.Set("Content-Type", "application/json")
-
-	_, err = b.js.PublishMsg(msg, nats.Context(ctx))
-	if err != nil {
-		return fmt.Errorf("failed to publish notification: %w", err)
-	}
-
-	log.Printf("Published notification for user %s (content: %s, type: %s)",
-		notification.UserID, notification.ContentID, notification.Type)
-	return nil
-}
-
-// Close closes the NATS connection.
-func (b *NATSBroker) Close() {
-	if b.conn != nil {
-		b.conn.Drain()
-		b.conn.Close()
-		log.Println("NATS connection closed")
-	}
-}
-
-// PublishModerationResult publishes a moderation result back to NATS.
 func (b *NATSBroker) PublishModerationResult(ctx context.Context, result *entity.ModerationResult) error {
 	data, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("failed to marshal moderation result: %w", err)
 	}
-
 	msg := nats.NewMsg(subjectModerationResult)
 	msg.Data = data
 	msg.Header.Set("Content-Type", "application/json")
-
 	_, err = b.js.PublishMsg(msg, nats.Context(ctx))
 	if err != nil {
 		return fmt.Errorf("failed to publish moderation result: %w", err)
 	}
+	log.Debug().Str("content_id", result.ContentID).Bool("approved", result.IsApproved).Msg("published moderation result")
+	return nil
+}
 
-	log.Printf("Published moderation result for content: %s (approved: %v)", result.ContentID, result.IsApproved)
+func (b *NATSBroker) PublishNotification(ctx context.Context, notification *entity.Notification) error {
+	data, err := json.Marshal(notification)
+	if err != nil {
+		return fmt.Errorf("failed to marshal notification: %w", err)
+	}
+	msg := nats.NewMsg(subjectNotification)
+	msg.Data = data
+	msg.Header.Set("Content-Type", "application/json")
+	_, err = b.js.PublishMsg(msg, nats.Context(ctx))
+	if err != nil {
+		return fmt.Errorf("failed to publish notification: %w", err)
+	}
+	log.Debug().Str("user_id", notification.UserID).Str("content_id", notification.ContentID).Msg("published notification")
+	return nil
+}
+
+func (b *NATSBroker) SubscribeModerationJobs(ctx context.Context, handler func(content *entity.Content) error) error {
+	sub, err := b.js.QueueSubscribe(
+		subjectModerationJob,
+		"moderation-workers",
+		func(msg *nats.Msg) {
+			var content entity.Content
+			if err := json.Unmarshal(msg.Data, &content); err != nil {
+				log.Warn().Err(err).Msg("unmarshal job content")
+				msg.Nak()
+				return
+			}
+			if err := handler(&content); err != nil {
+				log.Error().Err(err).Str("content_id", content.ID).Msg("processing job")
+				msg.Nak()
+				return
+			}
+			msg.Ack()
+		},
+		nats.ManualAck(),
+		nats.Bind("MODERATION_JOBS", "moderation-job-consumer"),
+	)
+	if err != nil {
+		return fmt.Errorf("subscribe to jobs: %w", err)
+	}
+	go func() {
+		<-ctx.Done()
+		sub.Unsubscribe()
+		log.Info().Msg("Jobs subscription closed")
+	}()
+	return nil
+}
+
+func (b *NATSBroker) SubscribeModerationResults(ctx context.Context, handler func(result *entity.ModerationResult) error) error {
+	sub, err := b.js.Subscribe(subjectModerationResult, func(msg *nats.Msg) {
+		var result entity.ModerationResult
+		if err := json.Unmarshal(msg.Data, &result); err != nil {
+			log.Warn().Err(err).Msg("unmarshal moderation result")
+			return
+		}
+		if err := handler(&result); err != nil {
+			log.Error().Err(err).Str("content_id", result.ContentID).Msg("handling moderation result")
+		}
+		msg.Ack()
+	}, nats.ManualAck(), nats.Durable("moderation-result-consumer"))
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to moderation results: %w", err)
+	}
+	go func() {
+		<-ctx.Done()
+		sub.Unsubscribe()
+		log.Info().Msg("Moderation results subscription closed")
+	}()
 	return nil
 }
 
@@ -241,12 +253,12 @@ func (b *NATSBroker) SubscribeNotifications(ctx context.Context, handler func(no
 	sub, err := b.js.Subscribe(subjectNotification, func(msg *nats.Msg) {
 		var notif entity.Notification
 		if err := json.Unmarshal(msg.Data, &notif); err != nil {
-			log.Printf("WARNING: failed to unmarshal notification: %v", err)
+			log.Warn().Err(err).Msg("unmarshal notification")
 			msg.Nak()
 			return
 		}
 		if err := handler(&notif); err != nil {
-			log.Printf("ERROR handling notification: %v", err)
+			log.Error().Err(err).Str("user_id", notif.UserID).Msg("handling notification")
 			msg.Nak()
 			return
 		}
@@ -258,137 +270,66 @@ func (b *NATSBroker) SubscribeNotifications(ctx context.Context, handler func(no
 	go func() {
 		<-ctx.Done()
 		sub.Unsubscribe()
-		log.Println("Notifications subscription closed")
+		log.Info().Msg("Notifications subscription closed")
 	}()
 	return nil
 }
 
-// SubscribeModerationJobs subscribes to incoming moderation jobs.
-func (b *NATSBroker) SubscribeModerationJobs(ctx context.Context, handler func(content *entity.Content) error) error {
-	sub, err := b.js.QueueSubscribe(
-		subjectModerationJob,
-		"moderation-workers",
-		func(msg *nats.Msg) {
-			var content entity.Content
-			if err := json.Unmarshal(msg.Data, &content); err != nil {
-				log.Printf("WARNING: unmarshal job content: %v", err)
-				msg.Nak() // will trigger redelivery
-				return
-			}
-
-			if err := handler(&content); err != nil {
-				log.Printf("ERROR processing job for %s: %v", content.ID, err)
-				msg.Nak()
-				return
-			}
-
-			msg.Ack()
-		},
-		nats.ManualAck(),
-		nats.Bind("MODERATION_JOBS", "moderation-job-consumer"),
-	)
-	if err != nil {
-		return fmt.Errorf("subscribe to jobs: %w", err)
-	}
-
-	go func() {
-		<-ctx.Done()
-		sub.Unsubscribe()
-		log.Println("Jobs subscription closed")
-	}()
-	return nil
-}
-
-func ensureConsumer(js nats.JetStreamContext) error {
-	consumerCfg := &nats.ConsumerConfig{
-		Durable:       "moderation-job-consumer",
-		DeliverGroup:  "moderation-workers",
-		AckPolicy:     nats.AckExplicitPolicy,
-		MaxDeliver:    3,
-		MaxAckPending: 100,
-		// Exponential backoff durations (100ms, 200ms, 400ms)
-		BackOff: []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond},
-	}
-
-	_, err := js.AddConsumer("MODERATION_JOBS", consumerCfg)
-	if err != nil {
-		if err != nats.ErrConsumerNameAlreadyInUse {
-			return fmt.Errorf("failed to add consumer: %w", err)
-		}
-		// Consumer already exists, update it
-		_, err = js.UpdateConsumer("MODERATION_JOBS", consumerCfg)
-		if err != nil {
-			return fmt.Errorf("failed to update consumer: %w", err)
-		}
-	}
-	return nil
-}
-
-// StartDLQMonitor subscribes to max delivery advisories and moves the original message to DLQ.
 func (b *NATSBroker) StartDLQMonitor(ctx context.Context) error {
-	// Advisory subject for our consumer
-	advisorySubject := "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.MODERATION_JOBS.moderation-job-consumer"
-
-	sub, err := b.js.Subscribe(advisorySubject, func(msg *nats.Msg) {
-		// Parse the advisory to extract stream and sequence
-		// The advisory payload is a JSON with fields "stream" and "seq" (among others)
+	sub, err := b.js.Subscribe(advisoryMaxDeliver, func(msg *nats.Msg) {
 		var advisory struct {
 			Stream string `json:"stream"`
-			Seq    uint64 `json:"stream_seq"` // field name is "stream_seq" in latest NATS
+			Seq    uint64 `json:"stream_seq"`
 		}
 		if err := json.Unmarshal(msg.Data, &advisory); err != nil {
-			log.Printf("DLQ: failed to parse advisory: %v", err)
-			msg.Nak() // will retry
-			return
-		}
-
-		if advisory.Stream == "" || advisory.Seq == 0 {
-			log.Printf("DLQ: incomplete advisory data, stream=%q seq=%d", advisory.Stream, advisory.Seq)
+			log.Warn().Err(err).Msg("DLQ: failed to parse advisory")
 			msg.Nak()
 			return
 		}
-
-		// Fetch the original message from the main stream
+		if advisory.Stream == "" || advisory.Seq == 0 {
+			log.Warn().Msg("DLQ: incomplete advisory data")
+			msg.Nak()
+			return
+		}
 		rawMsg, err := b.js.GetMsg(advisory.Stream, advisory.Seq)
 		if err != nil {
-			log.Printf("DLQ: failed to fetch original message (stream=%s seq=%d): %v", advisory.Stream, advisory.Seq, err)
+			log.Warn().Err(err).Str("stream", advisory.Stream).Uint64("seq", advisory.Seq).Msg("DLQ: failed to fetch original message")
 			msg.Nak()
 			return
 		}
-
-		// Publish to DLQ stream, preserving headers and data
 		dlqMsg := nats.NewMsg(subjectModerationJobDLQ)
 		dlqMsg.Data = rawMsg.Data
 		if rawMsg.Header != nil {
 			dlqMsg.Header = rawMsg.Header
 		}
-		// Optional: add metadata indicating original stream/seq
 		dlqMsg.Header.Set("X-Original-Stream", advisory.Stream)
 		dlqMsg.Header.Set("X-Original-Seq", fmt.Sprintf("%d", advisory.Seq))
-
 		_, err = b.js.PublishMsg(dlqMsg, nats.Context(ctx))
 		if err != nil {
-			log.Printf("DLQ: error publishing to DLQ: %v", err)
+			log.Warn().Err(err).Msg("DLQ: error publishing to DLQ")
 			msg.Nak()
 			return
 		}
-
-		log.Printf("DLQ: moved message %s/%d to DLQ", advisory.Stream, advisory.Seq)
+		log.Info().Str("stream", advisory.Stream).Uint64("seq", advisory.Seq).Msg("DLQ: moved message to DLQ")
 		msg.Ack()
 	}, nats.ManualAck())
-
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to DLQ advisory: %w", err)
 	}
-
 	go func() {
 		<-ctx.Done()
 		sub.Unsubscribe()
-		log.Println("DLQ monitor subscription closed")
+		log.Info().Msg("DLQ monitor subscription closed")
 	}()
-
 	return nil
 }
 
-// Verify interface compliance
+func (b *NATSBroker) Close() {
+	if b.conn != nil {
+		b.conn.Drain()
+		b.conn.Close()
+		log.Info().Msg("NATS connection closed")
+	}
+}
+
 var _ outbound.MessageBroker = (*NATSBroker)(nil)

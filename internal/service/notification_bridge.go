@@ -3,11 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"log"
 
 	"github.com/mohammadpnp/content-moderator/internal/adapter/inbound/websocket"
 	"github.com/mohammadpnp/content-moderator/internal/domain/entity"
 	"github.com/mohammadpnp/content-moderator/internal/domain/port/outbound"
+	"github.com/rs/zerolog/log"
 )
 
 const redisChannel = "moderation:notifications"
@@ -34,7 +34,7 @@ func (b *NotificationBridge) Start(ctx context.Context) error {
 		}
 		payload, err := json.Marshal(rt)
 		if err != nil {
-			log.Printf("Bridge marshal error: %v", err)
+			log.Error().Err(err).Str("user_id", notif.UserID).Str("content_id", notif.ContentID).Msg("bridge marshal error")
 			return err
 		}
 		return b.broadcaster.Publish(ctx, redisChannel, payload)
