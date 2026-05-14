@@ -1,0 +1,76 @@
+{
+  "dashboard": {
+    "title": "Content Moderator Dashboard",
+    "uid": "content-moderator-1",
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "HTTP Requests Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[1m])",
+            "legendFormat": "{{method}} {{endpoint}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+      },
+      {
+        "title": "HTTP P99 Latency",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, method, endpoint))",
+            "legendFormat": "{{method}} {{endpoint}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+      },
+      {
+        "title": "Moderation Results (Approved vs Rejected)",
+        "type": "piechart",
+        "targets": [
+          {
+            "expr": "sum by (is_approved) (moderation_results_total)",
+            "legendFormat": "{{is_approved}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 6, "x": 0, "y": 8 }
+      },
+      {
+        "title": "Active WebSocket Connections",
+        "type": "stat",
+        "targets": [{ "expr": "active_ws_connections" }],
+        "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 }
+      },
+      {
+        "title": "Job Queue Length",
+        "type": "stat",
+        "targets": [{ "expr": "job_queue_length" }],
+        "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 }
+      },
+      {
+        "title": "gRPC Requests Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(grpc_server_requests_total[1m])",
+            "legendFormat": "{{method}} ({{status}})"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
+      },
+      {
+        "title": "Moderation Duration (P99)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(moderation_duration_seconds_bucket[5m])) by (le, model_name))",
+            "legendFormat": "{{model_name}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 }
+      }
+    ]
+  }
+}
